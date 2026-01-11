@@ -931,8 +931,8 @@ function resetGame() {
 
     isTitleFlowing = true; // 高速巡航上にタイトルロゴを表示
     titleFlowStartX = car.x;
-    speedometerOpacity = 0; // v3.105: Smooth fade for speedometer;
-    let launchAnimProgress = 0; // v3.115: Progress for Shop lane boundary fill (0 to 1);
+    speedometerOpacity = 0; // v3.105: Smooth fade for speedometer
+    launchAnimProgress = 0; // v3.115: Progress for Shop lane boundary fill (0 to 1)
 
     hideResultScreen();
 
@@ -976,10 +976,17 @@ function update(dt, rawDt = dt) {
         soundManager.playDrift(dt); // 連続バースト
     }
 
-    // v2.99: 傾き更新
-    // 0に戻るバネ/減衰
     cameraAngle *= 0.95; // 単純な指数減衰
     if (Math.abs(cameraAngle) < 0.001) cameraAngle = 0;
+
+    // v3.115: Launch animation progress
+    if (gameState === STATE.PLAYING || gameState === STATE.DRIFTING) {
+        if (launchAnimProgress < 1.0) {
+            launchAnimProgress = Math.min(1.0, launchAnimProgress + dt * 0.8); // 1.25s duration
+        }
+    } else {
+        launchAnimProgress = 0;
+    }
 
     if (gameState === STATE.TITLE) {
         titleIdleTimer = 0; // アイドルロジックをリセット
@@ -2014,10 +2021,12 @@ function draw() {
             ctx.fillStyle = '#333';
             ctx.fillRect(cameraX, roadBottom, canvas.width + 1000, 140);
 
-            // Lane Divider (Dashed)
+            // Lane Divider (White Dashed -> Solid Fill-In)
             ctx.beginPath();
-            ctx.strokeStyle = '#DAA520';
+            ctx.strokeStyle = '#ffffff'; // v3.115: Changed from #DAA520 to White
             ctx.lineWidth = 4;
+
+            // Base Dashed Line
             ctx.setLineDash([40, 40]);
             const dashPeriod = 80;
             const startXUnrounded = cameraX - 2000;
@@ -2027,6 +2036,22 @@ function draw() {
             ctx.moveTo(worldStartX, roadBottom);
             ctx.lineTo(worldEndX, roadBottom);
             ctx.stroke();
+
+            // v3.115: "Filling In" Solid Line Animation
+            // Animates from Right (Front) to Left (Back)
+            if (launchAnimProgress > 0) {
+                ctx.setLineDash([]); // Solid
+                // Draw solid line on top of dashed line
+                // "Progress" fills from right to left. 
+                // fillWidth = total screen width * progress.
+                // start point = right edge of screen.
+                const screenRight = cameraX + canvas.width;
+                const fillWidth = (canvas.width + 2000) * launchAnimProgress;
+                ctx.beginPath();
+                ctx.moveTo(screenRight, roadBottom);
+                ctx.lineTo(screenRight - fillWidth, roadBottom);
+                ctx.stroke();
+            }
             ctx.setLineDash([]);
 
             // Lane White Edge
@@ -2066,7 +2091,10 @@ function draw() {
 
     ctx.fillStyle = '#fff';
     ctx.fillRect(cameraX, roadTop, canvas.width + 1000, 6);
-    ctx.fillRect(cameraX, roadBottom, canvas.width + 1000, 6);
+    // v3.115: Don't draw solid edge if the animated Shop divider is already there
+    if (!((gameState === STATE.SELECT_MODE || gameState === STATE.TITLE || isTitleFlowing) && selectLane === 1)) {
+        ctx.fillRect(cameraX, roadBottom, canvas.width + 1000, 6);
+    }
 
     // v3.70 - v3.32: Old Pit-In Code REMOVED
 
