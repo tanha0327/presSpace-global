@@ -120,6 +120,10 @@ let exitStartY = 0;
 let cameraZoom = 1.0;
 let targetZoom = 1.0;
 let cameraAngle = 0; // v2.99: ダッチアングル（傾き）
+let baseScale = 1.0; // v3.111: レスポンシブ用ベーススケール
+let isMobileView = false;
+let vw = 800; // v3.111: 仮想的な横幅
+let vh = 600; // v3.111: 仮想的な縦幅
 
 // v2.60: スキンデータ
 const SKINS = [
@@ -443,13 +447,30 @@ function updateUIFlow() {
 }
 
 // リサイズ処理
-// リサイズ処理
 function resize() {
     // v2.36: 動的解像度（レスポンシブ）
 
     // 最高品質のためにキャンバスをウィンドウサイズに正確に合わせます。
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
+
+    // v3.111: スマホ版の判定とスケーリング
+    isMobileView = window.innerWidth < 1000 || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+    if (isMobileView) {
+        // モバイル: 高さをベースにスケールを計算 (基準高さを600pxとする)
+        baseScale = window.innerHeight / 600.0;
+        // 極端なサイズにならないようにクランプ
+        if (baseScale < 0.5) baseScale = 0.5;
+        if (baseScale > 2.0) baseScale = 2.0;
+    } else {
+        // PC版は従来のサイズ（1.0）を維持
+        baseScale = 1.0;
+    }
+
+    // 仮想解像度の計算
+    vw = canvas.width / baseScale;
+    vh = canvas.height / baseScale;
 }
 window.addEventListener('resize', resize);
 resize();
@@ -1905,17 +1926,21 @@ function draw() {
     ctx.globalAlpha = 1.0;
     ctx.filter = 'none';
 
+    // v3.111: Clear screen using physical pixels (safety)
     ctx.fillStyle = '#1a1a1a';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // v3.111: Apply global base scale for responsive view
     ctx.save();
+    ctx.scale(baseScale, baseScale);
 
     const focusX = getCameraFocusX();
     // v2.17.5 Shift camera significantly forward (0.4) to accommodate "Behind" HUD
-    const cameraX = focusX - canvas.width * 0.4;
+    const cameraX = focusX - vw * 0.4;
 
     // v2.95: Apply Zoom (Centered on focus point roughly)
-    const zoomCenterX = canvas.width * 0.4;
-    const zoomCenterY = canvas.height / 2;
+    const zoomCenterX = vw * 0.4;
+    const zoomCenterY = vh / 2;
 
     ctx.translate(zoomCenterX, zoomCenterY);
     ctx.scale(cameraZoom, cameraZoom);
@@ -1926,16 +1951,16 @@ function draw() {
     // v2.40: Apply Screen Shake
     ctx.translate(-cameraX + screenShake.x, screenShake.y);
 
-    const centerY = canvas.height / 2;
+    const centerY = vh / 2;
     const roadHalfWidth = 140;
     const roadTop = centerY - roadHalfWidth;
     const roadBottom = centerY + roadHalfWidth;
 
     ctx.fillStyle = '#2e2e2e'; // v2.70: Brightened Parking Lane (was #222)
-    ctx.fillRect(cameraX, roadTop - 120, canvas.width + 1000, 120);
+    ctx.fillRect(cameraX, roadTop - 120, vw + 1000, 120);
 
     ctx.fillStyle = '#333';
-    ctx.fillRect(cameraX, roadTop, canvas.width + 1000, roadHalfWidth * 2);
+    ctx.fillRect(cameraX, roadTop, vw + 1000, roadHalfWidth * 2);
 
     // Center Line
     ctx.beginPath();
@@ -1947,7 +1972,7 @@ function draw() {
     const dashPeriod = 80;
     const startXUnrounded = cameraX - 2000;
     const worldStartX = Math.floor(startXUnrounded / dashPeriod) * dashPeriod;
-    const worldEndX = cameraX + canvas.width + 2000;
+    const worldEndX = cameraX + vw + 2000;
 
     ctx.lineDashOffset = 0;
     ctx.moveTo(worldStartX, centerY);
@@ -2019,7 +2044,7 @@ function draw() {
 
             // Draw Third Lane Asphalt
             ctx.fillStyle = '#333';
-            ctx.fillRect(cameraX, roadBottom, canvas.width + 1000, 140);
+            ctx.fillRect(cameraX, roadBottom, vw + 1000, 140);
 
             // Lane Divider (White Dashed -> Solid Fill-In)
             ctx.beginPath();
@@ -2031,7 +2056,7 @@ function draw() {
             const dashPeriod = 80;
             const startXUnrounded = cameraX - 2000;
             const worldStartX = Math.floor(startXUnrounded / dashPeriod) * dashPeriod;
-            const worldEndX = cameraX + canvas.width + 2000;
+            const worldEndX = cameraX + vw + 2000;
             ctx.lineDashOffset = 0;
             ctx.moveTo(worldStartX, roadBottom);
             ctx.lineTo(worldEndX, roadBottom);
@@ -2045,8 +2070,8 @@ function draw() {
                 // "Progress" fills from right to left. 
                 // fillWidth = total screen width * progress.
                 // start point = right edge of screen.
-                const screenRight = cameraX + canvas.width;
-                const fillWidth = (canvas.width + 2000) * launchAnimProgress;
+                const screenRight = cameraX + vw;
+                const fillWidth = (vw + 2000) * launchAnimProgress;
                 ctx.beginPath();
                 ctx.moveTo(screenRight, roadBottom);
                 ctx.lineTo(screenRight - fillWidth, roadBottom);
@@ -2056,7 +2081,7 @@ function draw() {
 
             // Lane White Edge
             ctx.fillStyle = '#fff';
-            ctx.fillRect(cameraX, roadBottom + 134, canvas.width + 1000, 6);
+            ctx.fillRect(cameraX, roadBottom + 134, vw + 1000, 6);
 
             // SHOP Text (Centered in Lane)
             ctx.textBaseline = 'middle';
@@ -2090,10 +2115,10 @@ function draw() {
     }
 
     ctx.fillStyle = '#fff';
-    ctx.fillRect(cameraX, roadTop, canvas.width + 1000, 6);
+    ctx.fillRect(cameraX, roadTop, vw + 1000, 6);
     // v3.115: Don't draw solid edge if the animated Shop divider is already there
     if (!((gameState === STATE.SELECT_MODE || gameState === STATE.TITLE || isTitleFlowing) && selectLane === 1)) {
-        ctx.fillRect(cameraX, roadBottom, canvas.width + 1000, 6);
+        ctx.fillRect(cameraX, roadBottom, vw + 1000, 6);
     }
 
     // v3.70 - v3.32: Old Pit-In Code REMOVED
@@ -2163,7 +2188,7 @@ function draw() {
     ctx.beginPath();
     for (const m of round.tireMarks) {
         // Optimization: Don't draw if off screen
-        if (m.x2 < cameraX - 100 || m.x1 > cameraX + canvas.width + 100) continue;
+        if (m.x2 < cameraX - 100 || m.x1 > cameraX + vw + 100) continue;
 
         ctx.moveTo(m.x1, m.y1);
         ctx.lineTo(m.x2, m.y2);
@@ -2252,7 +2277,7 @@ function draw() {
         // Define titleX (Center of camera view)
         // v2.18.1 Fix: Camera is at focusX - 0.4*W. So screen left is focusX - 0.4*W.
         // Center is focusX + 0.1*W. (0.5 - 0.4 = 0.1)
-        const titleX = titleFlowStartX + canvas.width * 0.1;
+        const titleX = titleFlowStartX + vw * 0.1;
 
         ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
         ctx.save();
@@ -2288,7 +2313,7 @@ function draw() {
             ctx.font = '900 20px Inter, sans-serif';
             const verX = titleX + 320; // Moved right as requested
             const verY = centerY - 10; // v3.98: Moved down
-            ctx.fillText("Ver01.11.17.02.10s", verX, verY);
+            ctx.fillText("Ver01.11.18.04.45s", verX, verY);
 
 
         }
@@ -2318,7 +2343,7 @@ function draw() {
     // v2.30.21: Draw Level Up Road Markings (World Space)
     if (levelMarking.x !== null) {
         // Only draw if within reasonable distance (optimization)
-        if (levelMarking.x > cameraX - 1000 && levelMarking.x < cameraX + canvas.width + 1000) {
+        if (levelMarking.x > cameraX - 1000 && levelMarking.x < cameraX + vw + 1000) {
             ctx.save();
             ctx.textAlign = 'center';
             // v2.30.27: 垂直方向中央揃え（100pxフォント用に+35オフセット）
@@ -2379,7 +2404,12 @@ function draw() {
         ctx.restore();
     }
 
+    // v3.111: Car should also clipping optimize? (Already does by being in round.cars which is managed?)
+    // No, round.cars is full list. 
+
     for (const c of round.cars) {
+        // Optimization
+        if (c.x + c.w < cameraX - 100 || c.x > cameraX + vw + 100) continue;
         ctx.fillStyle = c.color;
         ctx.fillRect(c.x, c.y, c.w, c.h);
         ctx.fillStyle = '#2a2a2a';
@@ -2428,11 +2458,13 @@ function draw() {
 
     // v3.65: Player-Side HUD (Restored) - NOW HANDLED IN renderHUD
 
-    ctx.restore(); // Restore Camera Transform (Back to Screen Space)
+    // v3.111: End Scaled Block
+    ctx.restore();
 
     // v2.30.38: Draw Flying Score (Screen Space Phase)
     if (floatingScore && floatingScore.isScreenSpace) {
         ctx.save();
+        ctx.scale(baseScale, baseScale);
         ctx.fillStyle = '#ffff00';
         ctx.font = '900 40px Inter, sans-serif';
         ctx.textAlign = 'center';
@@ -2482,6 +2514,8 @@ function draw() {
 
 function renderHUD() {
     // Player HUD (Top Left / Or Player Side)
+    ctx.save();
+    ctx.scale(baseScale, baseScale);
 
     // 1. Text Based HUD (Top Left)
     // Always show HUD
@@ -2523,17 +2557,14 @@ function renderHUD() {
         // I will extract the Screen-Attached one to `renderHUD`.
         // I will LEAVE the World-Attached one in place (or extract a `renderWorldHUD`?).
         // For simplicity and "safe refactor", I will leave the World-Attached one (2242) where it is (inside the camera transform).
-        // The block I am replacing (2297 to 2454) is entirely Screen Space.
-        // So `renderHUD` will only contain the Screen Space HUD (Level/Score).
-        // The unused `kmh` calculation at 2304 was used for... nothing in the screen space block?
-        // It was used for the commented out line 2387.
-        // So it's fine.
     }
+    ctx.restore();
 }
 
 function renderSelectMode(cameraX) {
     ctx.save();
-    const centerY = canvas.height / 2;
+    ctx.scale(baseScale, baseScale);
+    const centerY = vh / 2;
 
     // Draw Highway Gantry (Overhead)
     // Positioned ahead of the car
@@ -2550,7 +2581,7 @@ function renderSelectMode(cameraX) {
     ctx.stroke();
 
     // Check if visible
-    if (gantryX > cameraX - 100 && gantryX < cameraX + canvas.width + 1000) {
+    if (gantryX > cameraX - 100 && gantryX < cameraX + vw + 1000) {
         ctx.fillStyle = '#333';
         // Pillars
         ctx.fillRect(gantryX - 10, centerY - 300, 20, 500); // Behind main road
@@ -2615,26 +2646,29 @@ function renderSelectMode(cameraX) {
     ctx.textAlign = 'center';
     ctx.shadowColor = 'black';
     ctx.shadowBlur = 4;
-    ctx.fillText("LANE [↑/↓]  SELECT [SPACE]", canvas.width / 2, canvas.height - 100);
+    ctx.fillText("LANE [↑/↓]  SELECT [SPACE]", vw / 2, vh - 100);
     ctx.restore();
 }
 
 function renderShop() {
+    ctx.save();
+    ctx.scale(baseScale, baseScale);
+
     ctx.fillStyle = 'rgba(0,0,0,0.8)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height); // Overlay
+    ctx.fillRect(0, 0, vw, vh); // Overlay
 
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
 
     ctx.font = '900 40px Inter, sans-serif';
-    ctx.fillText("SKIN SHOP", canvas.width / 2, 100);
+    ctx.fillText("SKIN SHOP", vw / 2, 100);
     ctx.font = '900 20px Inter, sans-serif';
-    ctx.fillText(`COINS: ${coins}`, canvas.width / 2, 140);
+    ctx.fillText(`COINS: ${coins}`, vw / 2, 140);
 
     // Draw Selected Skin Preview (Large)
     const skin = SKINS[shopSelection];
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
+    const cx = vw / 2;
+    const cy = vh / 2;
 
     // v2.90: Use new renderer
     drawCar(cx, cy, skin, 2.0); // Scale 2.0
@@ -2673,16 +2707,18 @@ function renderShop() {
     ctx.fillStyle = 'rgba(255,255,255,0.5)';
     ctx.fillText("< LEFT / RIGHT >", cx, cy + 240);
     ctx.font = '16px Inter, sans-serif';
-    ctx.fillText("[S] or [ESC] to RETURN", cx, canvas.height - 40);
+    ctx.fillText("[S] or [ESC] to RETURN", cx, vh - 40);
+    ctx.restore();
 }
 
 function drawMuteButton() {
     ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0); // Screen Space
+    ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset physical
+    ctx.scale(baseScale, baseScale);
 
     const btnSize = 40;
     const margin = 25;
-    const x = canvas.width - margin - btnSize;
+    const x = vw - margin - btnSize;
     const y = margin;
 
     // Hit area visual
