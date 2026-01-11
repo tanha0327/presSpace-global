@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>presSpace</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;900&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ui-layer" style="display: none;">
+            <div id="title-screen" class="screen active">
+                <h1 class="logo">presSpace</h1>
+                <p class="instruction">PRESS [SPACE]</p>
+                <div id="version">Ver01.11.01.10日1</div>
+            </div>
+            <div id="result-screen" class="screen hidden">
+                <h2 id="result-rank">PERFECT</h2>
+                <div id="score-container">SCORE: <span id="score-value">0</span></div>
+                <p class="restart-msg">PRESS [SPACE] TO RETRY</p>
+            </div>
+        </div>
+    </div>
+    <script src="game.js"></script>
+</body>
+
+</html>
