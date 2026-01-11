@@ -99,6 +99,12 @@ let audioSettings = JSON.parse(localStorage.getItem('preSpaceAudioSettings')) ||
 let showAudioMenu = false; // 設定オーバーレイの切り替え
 let audioMenuSelection = 0; // 0: エンジン, 1: SFX, 2: UI
 
+// v3.146: Decouple Blinker from Lane Selection
+let blinkerActive = false;
+
+// v3.111: Screen Fade Global
+let screenFade = { alpha: 0, state: 0 }; // 0:None, 1:FadeOut, 2:FadeIn, 3:Black
+
 function saveAudioSettings() {
     localStorage.setItem('preSpaceAudioSettings', JSON.stringify(audioSettings));
 }
@@ -227,6 +233,14 @@ class SoundManager {
         // スムーズな遷移
         this.engineOsc.frequency.setTargetAtTime(targetFreq, this.ctx.currentTime, 0.1);
         this.engineFilter.frequency.setTargetAtTime(targetFilter, this.ctx.currentTime, 0.1);
+    }
+
+    // v3.147: Volume Fade Support
+    setEngineVolume(vol) {
+        if (this.engineGain) {
+            // Base volume is 0.1, so multiply by that
+            this.engineGain.gain.setTargetAtTime(vol * 0.1, this.ctx.currentTime, 0.1);
+        }
     }
 
     // ワンショットノイズ（クラッシュ）
@@ -582,10 +596,12 @@ window.addEventListener('keydown', (e) => {
     // v3.00: 車線選択 (タイトル / 選択モード)
     if (gameState === STATE.TITLE || gameState === STATE.SELECT_MODE) {
         if (e.code === 'ArrowDown' || e.code === 'ArrowRight') {
-            selectLane = 1; // ショップ/出口
+            selectLane = 1; // Shop Lane
+            blinkerActive = true; // v3.146: Blinker ON
             soundManager.playUI();
         } else if (e.code === 'ArrowUp' || e.code === 'ArrowLeft') {
-            selectLane = 0; // GO車線
+            selectLane = 0; // GO Lane
+            blinkerActive = false; // v3.146: Blinker OFF
             soundManager.playUI();
         }
     }
@@ -666,11 +682,10 @@ function handleInput(e) {
         if (selectLane === 0) {
             startGame();
         } else {
-            gameState = STATE.EXITING;
-            exitTargetX = car.x + 1000;
-            exitTransitionTimer = 3.0;
-            exitStartX = car.x;
-            exitStartY = car.y;
+            // v3.141: Trigger High Speed Shop Transition
+            gameState = STATE.SELECT_MODE;
+            shopTransitionTimer = 1.0; // Trigger transition loop
+            blinkerActive = true; // v3.146: Activate Blinker
             soundManager.startEngine();
         }
     } else if (gameState === STATE.SELECT_MODE) {
@@ -1151,9 +1166,14 @@ function update(dt, rawDt = dt) {
         // v3.00: Highway Autopilot
         car.vx = 20;
         car.x += car.vx;
-        scrollFocusX = car.x;
-        // v2.5: World Anchor sync (Keep markings floating with car during selection)
-        titleFlowStartX = car.x;
+
+        // v3.142: Detach camera during transition so car zooms off-screen
+        if (shopTransitionTimer <= 0) {
+            scrollFocusX = car.x;
+            titleFlowStartX = car.x; // Keep markings synced only when not transitioning
+        } else {
+            // Let car distance itself from markings/camera
+        }
 
         // Lane Lerp
         // Lane 0: GO (Main) -> centerY + 64
@@ -1164,12 +1184,9 @@ function update(dt, rawDt = dt) {
 
         let targetY = centerY + 64; // Default Main
 
-        if (selectLane === 1) {
-            // v3.110: User requested NO physical lane change. Only Blinker.
-            // targetY = roadBottom + 70; // <-- Disabled physical move
-            targetY = centerY + 70; // Stay in Main Lane
-            // Force Y if drifting for some reason?
-            // car.y = targetY; // Strict lock? No, let it lerp if needed for smoothness, but target must be Main.
+        if (selectLane === 1 || shopTransitionTimer > 0) {
+            // Shop selected OR Transitioning: Target Shop Lane
+            targetY = centerY + 210;
         }
 
         // v3.10: Auto-Transition Logic
@@ -1188,64 +1205,51 @@ function update(dt, rawDt = dt) {
         }
 
         if (shopTransitionTimer > 0) {
-            shopTransitionTimer -= dt;
+            // v3.140: Cinematic "Garage Entry" Transition
 
-            // v3.110: No curve, just wait for transition
-            // targetY is already locked to Main Lane (or whatever we want during transition)
-            // If we want them to enter the shop, we might need to steer them right eventually?
-            // "The car stays in the main lane... The 3rd lane still appears visually."
-            // "Space key to..." (Future)
-            // So for now, hitting the gantry with blinker on should probably NOT exit automatically?
-            // But currently it DOES (lines 1110-1120).
-            // I will leave existing auto-exit logic for now (maybe that's what moves them?), 
-            // but I will ensure the visual CURVE is gone.
+            // 1. Stop Blinker if Lane Change Done
+            if (Math.abs(car.y - targetY) < 10) {
+                blinkerActive = false; // Turn off blinker (Lane visual stays because selectLane is still 1)
+            }
 
-            // Keep targetY as is (Main Lane)
-            // targetY = centerY + 70; 
+            // 2. Accelerate away
+            car.vx += 2.0;
 
-            if (shopTransitionTimer <= 0) {
+            // 3. Fade Out (Delayed and Slow)
+            // v3.146: Fade starts when car is visibly disappearing
+            if (car.x > scrollFocusX + canvas.width - 200) {
+                // v3.147: Faster fade (1/2 time -> double speed) per user
+                screenFade.alpha += dt * 0.6; // Was 0.3
+
+                // v3.147: Audio Fade Out
+                soundManager.setEngineVolume(Math.max(0, 1.0 - screenFade.alpha));
+            }
+
+            // 4. Transition when completely off-screen and fade is mostly done (or just off-screen)
+            // Wait for fade to be somewhat advanced? Or just offscreen?
+            // User said "Start fade later".
+            // Let's transition when fade is full OR car is way gone.
+            if (screenFade.alpha >= 1.0) {
+                screenFade.alpha = 1.0;
+                screenFade.state = 2; // Trigger Fade In
+
                 isTitleFlowing = false;
                 gameState = STATE.SHOP;
                 shopTransitionTimer = 0; // Reset
+                soundManager.stopEngine(); // v3.147: Silence engine in Shop
             }
+        } else {
+            // Normal loop speed if not transitioning
         }
 
         // Smooth Y movement
-        car.y += (targetY - car.y) * 5 * dt;
+        // v3.145: Reverted Y boost (User request)
+        const lerpSpeed = 5;
+        car.y += (targetY - car.y) * lerpSpeed * dt;
         // Tilt car based on Y movement
         car.angle = (targetY - car.y) * 0.003;
     }
-    else if (gameState === STATE.EXITING) {
-        // v3.31: Faster Animation (Shortened curve)
-        exitTransitionTimer -= dt;
-        car.x += car.vx;
-
-        // Horizontal distance from ramp start
-        const distFromRampStart = car.x - exitTargetX;
-
-        // Short merge over 800px starting from exitTargetX
-        if (distFromRampStart > 0) {
-            const progress = Math.min(1.0, distFromRampStart / 800);
-            // Shallower curve (400px drop instead of 500px)
-            const targetExitY = (canvas.height / 2 + 140) + 400;
-            car.y = exitStartY + (targetExitY - exitStartY) * progress * progress;
-            car.angle = progress * 0.4; // Bit more turn for speed
-        } else {
-            // Smoothly align to lane 1 while approaching the pit-entry
-            const targetY = (canvas.height / 2) + 200;
-            car.y += (targetY - car.y) * 4 * dt;
-            car.angle = (targetY - car.y) * 0.002;
-        }
-
-        scrollFocusX = car.x;
-
-        // Transition to shop after merging deep into the ramp
-        if (distFromRampStart > 1200 || exitTransitionTimer <= 0) {
-            isTitleFlowing = false;
-            gameState = STATE.SHOP;
-            exitTransitionTimer = 0;
-        }
-    }
+    // v3.141: Removed EXITING state logic (Legacy Exit Ramp)
     else if (gameState === STATE.SCROLLING) {
         // Camera moves forward
         scrollFocusX += round.speed * 1.5; // Fast forward
@@ -1317,6 +1321,15 @@ function update(dt, rawDt = dt) {
         // v2.30.1: Fix missing collision check
         checkCollisions();
 
+    } else if (gameState === STATE.SHOP) {
+        // v3.140: Garage Fade In
+        if (screenFade.state === 2) {
+            screenFade.alpha -= dt * 1.5;
+            if (screenFade.alpha <= 0) {
+                screenFade.alpha = 0;
+                screenFade.state = 0;
+            }
+        }
     } else if (gameState === STATE.DRIFTING) {
         let angleDiff = 0; // v3.99: Define in outer scope
 
@@ -2519,6 +2532,15 @@ function draw() {
 
     // v3.55: Draw Mute Button (Always on top)
     drawMuteButton();
+
+    // v3.111: Global Screen Fade Overlay (Topmost)
+    if (screenFade.alpha > 0) {
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform to screen space
+        ctx.fillStyle = `rgba(0, 0, 0, ${screenFade.alpha})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+    }
 }
 
 function renderHUD() {
@@ -2579,15 +2601,8 @@ function renderSelectMode(cameraX) {
     // Positioned ahead of the car
     const gantryX = (Math.floor(car.x / 4000) + 1) * 4000;
 
-    // v3.05: Draw Exit Ramp visual starting to peel off
-    ctx.strokeStyle = 'rgba(85, 85, 85, 0.8)';
-    ctx.lineWidth = 140; // Match road width
-    ctx.setLineDash([]);
-    ctx.beginPath();
-    // Starts straight, then curves down (Y+) starting at gantryX
-    ctx.moveTo(gantryX - 400, centerY + 64);
-    ctx.bezierCurveTo(gantryX + 200, centerY + 64, gantryX + 200, centerY + 300, gantryX + 1000, centerY + 500);
-    ctx.stroke();
+    // v3.141: Exit Ramp Removed (Straight Transition)
+    // No visuals for branching. Just straight road ahead.
 
     // Check if visible
     if (gantryX > cameraX - 100 && gantryX < cameraX + vw + 1000) {
@@ -2891,7 +2906,7 @@ function drawCar(x, y, skin, scale) {
     }
 
     // v3.110: Blinker Logic (Right Blinker for Shop Selection)
-    if ((gameState === STATE.SELECT_MODE || gameState === STATE.TITLE) && selectLane === 1) {
+    if ((gameState === STATE.SELECT_MODE || gameState === STATE.TITLE) && blinkerActive) {
         // Blink every 300ms
         const blinkCycle = Math.floor(Date.now() / 300);
         const blink = blinkCycle % 2 === 0;
