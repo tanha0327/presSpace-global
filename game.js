@@ -931,7 +931,8 @@ function resetGame() {
 
     isTitleFlowing = true; // 高速巡航上にタイトルロゴを表示
     titleFlowStartX = car.x;
-    speedometerOpacity = 0; // v3.105: Smooth fade for speedometeren();
+    speedometerOpacity = 0; // v3.105: Smooth fade for speedometer;
+    let launchAnimProgress = 0; // v3.115: Progress for Shop lane boundary fill (0 to 1);
 
     hideResultScreen();
 
@@ -991,7 +992,9 @@ function update(dt, rawDt = dt) {
         titleIdleTimer += dt;
         if (titleDemoState === 0) {
             // v3.11: 車戦ベースの選択（車が車線間を移動）
-            let targetY = (selectLane === 0) ? drivingY : (centerY + 200);
+            // v3.111: Disable physical lane change in TITLE too.
+            // let targetY = (selectLane === 0) ? drivingY : (centerY + 200);
+            let targetY = drivingY; // Force Main Lane
 
             // デモまで8秒待機
             if (titleIdleTimer > 8) {
@@ -2257,7 +2260,7 @@ function draw() {
             ctx.font = '900 20px Inter, sans-serif';
             const verX = titleX + 320; // Moved right as requested
             const verY = centerY - 10; // v3.98: Moved down
-            ctx.fillText("Ver01.11.16.61s", verX, verY);
+            ctx.fillText("Ver01.11.17.02.10s", verX, verY);
 
 
         }
@@ -2815,7 +2818,7 @@ function drawCar(x, y, skin, scale) {
     }
 
     // v3.110: Blinker Logic (Right Blinker for Shop Selection)
-    if (gameState === STATE.SELECT_MODE && selectLane === 1) {
+    if ((gameState === STATE.SELECT_MODE || gameState === STATE.TITLE) && selectLane === 1) {
         // Blink every 300ms
         const blink = Math.floor(Date.now() / 300) % 2 === 0;
         if (blink) {
