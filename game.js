@@ -5,6 +5,8 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
+const version = "Ver01.11.23.10s"; // v3.140: Fix bad park restart
+
 // v2.90: roundRectのポリフィル（古いブラウザ用）
 if (!ctx.roundRect) {
     ctx.roundRect = function (x, y, w, h, radii) {
@@ -692,16 +694,8 @@ function handleInput(e) {
             }
         }
 
-        // v3.116: U-drift (Up + Space)
-        const isUpPressed = keys['ArrowUp'] || e.swipeUp;
-        if (isUpPressed) {
-            startDrift('udrift');
-        } else if (e.shiftKey) {
-            // v3.72: ドーナツドリフト (Shift + Space)
-            startDrift('donut');
-        } else {
-            startDrift('normal');
-        }
+        // v3.116: Simplify Drift - Always Normal
+        startDrift('normal');
     } else if (gameState === STATE.RESULT || gameState === STATE.CRASHED) {
         if (gameState === STATE.RESULT && level > 10) {
             resetGame();
@@ -954,63 +948,23 @@ function startRound() {
 
 function startDrift(type = 'normal') {
     gameState = STATE.DRIFTING;
-    car.driftType = type; // v3.72: 'normal' or 'donut'
+    car.driftType = type; // v3.72: 'normal', 'donut', 'udrift', 'spot_donut'
 
     if (!round.spot) {
         // Safety Case: If spot is missing, create a dummy one to prevent crash
         round.spot = { x: car.x + 1000, y: canvas.height / 2 + 64 - 200, w: 200, h: 100 };
     }
 
-    if (type === 'donut') {
-        // v3.72: ドーナツドリフト初期化
-        // ターゲットYへの誘導は弱くし、スピンを優先
-        const targetY = round.spot.y;
-        const dy = targetY - car.y;
-        // 少し滑らせつつ、スピンを与える。通常の物理演算とは異なる軌道。
-        // v3.74: 摩擦を0.96に変更するため、係数は0.04 (1 - 0.96)
-        // v3.100: "届かない"対策。360度停止で減速するため、理論値より大きくする(1.5倍)
-        // v3.101: ゆっくり回転 (0.96 -> 0.985 friction, spin 0.4)
-        // Friction 0.985 -> loss 0.015. 
-        // ターゲットYに到達するための理論値 = dy * 0.015
-        // v3.102: もっと奥まで！ (User requested "reach between parked cars")
-        // 理論値の3倍くらい必要かもしれない (0.015 * 3 = 0.045)
-        car.vy = dy * 0.055;
+    // Standard Drift Init
+    const targetY = round.spot.y;
+    const dy = targetY - car.y;
 
-        // 強烈なスピン初期化
-        // v3.101: ゆっくり回る (0.8 -> 0.4)
-        car.spin = (Math.random() < 0.5 ? -1 : 1) * 0.4;
-        car.totalRotation = 0; // v3.73: 回転量追跡
-    } else if (type === 'udrift') {
-        // v3.116 - v3.125: U-Orbit Park (The "G" Shape)
-        const spotX = round.spot.x;
-        const spotY = round.spot.y;
-        const pylonX = spotX + 150; // Pole slightly further ahead for wider G
+    // v2.7 Target Physics
+    car.vy = dy * (0.03 / 0.97);
 
-        car.driftStage = 0; // Stage 0: Launch/Overshoot
-        car.vx = round.speed * 1.6; // High speed launch
-        car.vy = -4; // Initially pull slightly up to clear lane
-        car.coinAwarded = false;
-
-        // Initial angle: Start turning towards shoulder
-        car.angle = -0.3;
-        car.spin = 0;
-    } else {
-        // v2.7 ターゲット指定ドリフト物理
-        // 停止するまでに車が正確にround.spot.yまでスライドするようにしたい。
-        // 物理: フレームごとに vy *= 0.97
-        // 総Y移動距離 = vy_start / (1 - 0.97) = vy_start / 0.03
-        // よって: wy_start = (TargetY - CurrentY) * 0.03
-
-        const targetY = round.spot.y;
-        const dy = targetY - car.y;
-
-        // targetYで完全に停止するための理論的なvy
-        // 等比級数から導出された係数: sum = a * (r / (1-r))
-        // 摩擦 r = 0.97
-        // 係数 = (1 - 0.97) / 0.97 = 0.03 / 0.97 約 0.0309278
-        // 物理演算がターゲットで正確に停止するように、この正確な係数を使用します。
-        car.vy = dy * (0.03 / 0.97);
-    }
+    // Initial spin reset
+    car.spin = 0;
+    car.totalRotation = 0;
 
     // v3.62: 高速エントリーの安全クランプ
     // 高速道路(20)から減速中にドリフトに入った場合、クランプ（制限）します。
@@ -1366,116 +1320,22 @@ function update(dt, rawDt = dt) {
     } else if (gameState === STATE.DRIFTING) {
         let angleDiff = 0; // v3.99: Define in outer scope
 
-        if (car.driftType === 'donut') {
-            // v3.72: ドーナツ物理
-            // v3.74: 到達するように摩擦を軽減 (0.92 -> 0.96)
-            // v3.101: さらに滑らかに (0.96 -> 0.985)
-            car.vx *= 0.985;
-            car.vy *= 0.985;
-            car.spin *= 0.985; // スピン減衰も合わせる
-        } else {
-            car.vx *= 0.94;
-            car.vy *= 0.97;
-        }
+        // Standard Friction
+        car.vx *= 0.94;
+        car.vy *= 0.97;
 
         car.x += car.vx;
         car.y += car.vy;
 
-        if (car.driftType === 'donut') {
-            car.angle += car.spin;
-            car.totalRotation += car.spin;
+        // Standard Drift Logic (Always apply)
+        const targetAngle = -Math.PI;
+        angleDiff = targetAngle - car.angle;
+        car.angle += angleDiff * 0.15;
 
-            // v3.73: 360度（2PI）回転したらピタッと止める
-            if (Math.abs(car.totalRotation) >= Math.PI * 2) {
-                car.angle = 0; // 正面向きで停止（スタイリッシュ！）
-                car.spin = 0;
-                // 強制的に停止させる（パーキング状態へ移行するか、摩擦を極大にする）
-                car.vx *= 0.5;
-                car.vy *= 0.5;
-                // ドーナツ完了フラグ
-                car.driftType = 'donut_finish';
-            }
-        } else if (car.driftType === 'donut_finish') {
-            // 完了後の余韻（少し滑って止まる）
-            car.vx *= 0.8;
-            car.vy *= 0.8;
-        } else if (car.driftType === 'udrift') {
-            // v3.125: "U-Orbit Park" (Rotated G-shape)
-            const spotY = round.spot.y;
-            const spotX = round.spot.x;
-            const pylonX = spotX + 150;
-
-            // Physics: Centripetal force towards pylon
-            const dx = pylonX - car.x;
-            const dy = spotY - car.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-
-            if (car.driftStage < 3) {
-                // Angle Tracking: "車体は常にポールの中心を向いている"
-                const angleToPylon = Math.atan2(dy, dx);
-                car.angle += (angleToPylon - car.angle) * 0.15;
-            }
-
-            if (car.driftStage === 0) {
-                // Stage 0: Launch past pylon
-                car.vx += 0.15;
-                car.vy -= 0.15; // Pulling up
-                if (car.x > pylonX + 100) car.driftStage = 1;
-
-            } else if (car.driftStage === 1) {
-                // Stage 1: Sweep Down/Right (G's starting curve)
-                // Gravity pulls us around in a wide arc
-                const pullX = 0.5;
-                const pullY = 1.0;
-                car.vx += (dx / dist) * pullX;
-                car.vy += (dy / dist) * pullY;
-
-                if (car.y > spotY + 100) car.driftStage = 2;
-
-            } else if (car.driftStage === 2) {
-                // Stage 2: Return Orbit (G's outer bottom loop)
-                const pull = 1.4; // Tighter pull to head back X-
-                car.vx += (dx / dist) * pull;
-                car.vy += (dy / dist) * pull;
-
-                // Award Coin at the peak of the turnaround
-                if (!car.coinAwarded && car.x < pylonX) {
-                    car.coinAwarded = true;
-                    coins++;
-                    soundManager.playCoin();
-                    addFloatingScore(car.x, car.y, 0, 'coin');
-                }
-
-                // If we are heading back behind the pylon
-                if (car.x < pylonX - 50 && car.vy < 0) car.driftStage = 3;
-
-            } else if (car.driftStage === 3) {
-                // Stage 3: Hook/Finish (Align forward behind pylon)
-                const pullX = (spotX - car.x) * 0.08;
-                const pullY = (spotY - car.y) * 0.08;
-                car.vx += pullX;
-                car.vy += pullY;
-
-                // Align to FORWARD (0 radians)
-                car.angle += (0 - car.angle) * 0.18;
-
-                if (dist < 30) car.vx *= 0.8;
-            }
-
-            car.vx *= 0.975; // Sweepy friction
-            car.vy *= 0.975;
-        } else {
-            const targetAngle = -Math.PI;
-            angleDiff = targetAngle - car.angle; // Assign to outer var
-            // Faster rotation for parallel alignment (v2.8)
-            car.angle += angleDiff * 0.15;
-
-            // v3.73: 無限ループ防止（あまりにも遅くなったら強制停止）
-            if (Math.abs(car.vx) < 0.1 && Math.abs(car.vy) < 0.1) {
-                car.vx = 0;
-                car.vy = 0;
-                // この後の判定ロジックで停止とみなされるはず
-            }
+        // v3.73: Infinite loop prevention
+        if (Math.abs(car.vx) < 0.1 && Math.abs(car.vy) < 0.1) {
+            car.vx = 0;
+            car.vy = 0;
         }
 
         // Force stop if very slow to check result quickly
@@ -1521,6 +1381,15 @@ function update(dt, rawDt = dt) {
 
         // v2.30.7: Continuous Collision Check (Pinball effect)
         checkCollisions();
+    }
+    else if (gameState === STATE.LEVEL_UP) {
+        // Waiting for nextRound setTimeout to trigger SCROLLING
+    }
+    else if (gameState === STATE.RESULT) {
+        resultTimer -= dt;
+        if (resultTimer < 0 && !isClickable_result) {
+            isClickable_result = true;
+        }
     }
     // v2.7 Auto-Align Removed (Replaced by Targeted Drift)
 
@@ -1774,6 +1643,12 @@ function checkRectOverlap(r1, r2) {
     return !(r1.x > r2.x + r2.w || r1.x + r1.w < r2.x || r1.y > r2.y + r2.h || r1.y + r1.h < r2.y);
 }
 
+// v3.80: Add Stylish Points
+function addStylish(points, text) {
+    score += points;
+    // Visuals are handled by nextRound or separate particle system if needed
+}
+
 function checkResult() {
     // v3.97: Safety check
     if (!round || !round.spot) {
@@ -1786,19 +1661,11 @@ function checkResult() {
     const spot = round.spot;
 
     const angleErr = Math.abs(Math.abs(car.angle) - Math.PI);
-    // v3.72: ドーナツドリフトは角度制限を緩和（スタイリッシュさ優先）
-    // v3.103: 'donut_finish' も判定対象に含める
-    if (car.driftType === 'donut' || car.driftType === 'donut_finish') {
-        addStylish(3000, "DONUT!"); // v3.80: Higher score for donuts
-        // ドーナツは回転終了後（0度）で止まるため、角度チェックはスキップ
-    } else if (car.driftType === 'udrift') {
-        addStylish(8000, "U-ORBIT PARK!"); // v3.118: Legendary maneuver
-    } else {
-        addStylish(1000, "STYLISH!");
-        if (angleErr > 0.8) {
-            failRound("BAD ANGLE");
-            return;
-        }
+
+    // Standard Parking Angle Check
+    if (angleErr > 0.8) {
+        failRound("BAD ANGLE");
+        return;
     }
 
     const carCenter = bounds.x + bounds.w / 2;
@@ -1832,6 +1699,8 @@ function failRound(reason) {
     // Setup Ui Flow
     resultFlowStartX = car.x;
     isResultFlowing = true;
+    resultTimer = 1.0; // v3.140: Init timer for restart check
+    isClickable_result = false;
 
     if (isDemoDrifting) {
         titleDemoState = 2;
@@ -2263,53 +2132,6 @@ function draw() {
     // v3.70 - v3.32: Old Pit-In Code REMOVED
 
 
-    // v3.118: U-Drift Pylon Visual (The "Pole" to curve around)
-    if (round.spot && (gameState === STATE.PLAYING || gameState === STATE.DRIFTING)) {
-        ctx.save();
-        // v3.118: Pylon is at front-edge of spot (X + 150 for G-shape)
-        const px = round.spot.x + 150;
-        const py = round.spot.y;
-
-        // Only draw if safe distance/onscreen
-        if (px > cameraX - 100 && px < cameraX + vw + 100) {
-            // 1. Pole with Metallic Gradient
-            const poleGrad = ctx.createLinearGradient(px - 3, 0, px + 3, 0);
-            poleGrad.addColorStop(0, '#444');
-            poleGrad.addColorStop(0.5, '#aaa');
-            poleGrad.addColorStop(1, '#444');
-            ctx.fillStyle = poleGrad;
-            ctx.fillRect(px - 3, py - 20, 6, 35); // Slightly thicker pole
-
-            // 2. Head Housing (Trapezoid/Rounded)
-            ctx.fillStyle = '#ff8c00'; // Orange
-            const headW = 18;
-            const headH = 24;
-
-            // Base of the head
-            ctx.beginPath();
-            ctx.moveTo(px - headW / 2, py - 15);
-            ctx.lineTo(px + headW / 2, py - 15);
-            ctx.lineTo(px + headW / 2 + 2, py - 25);
-            ctx.lineTo(px - headW / 2 - 2, py - 25);
-            ctx.fill();
-
-            // Main Body (Dome top)
-            ctx.beginPath();
-            ctx.arc(px, py - 32, headW / 2 + 2, Math.PI, 0); // Dome
-            ctx.lineTo(px + headW / 2 + 2, py - 25);
-            ctx.lineTo(px - headW / 2 - 2, py - 25);
-            ctx.closePath();
-            ctx.fill();
-
-            // 3. Glossy Highlight
-            ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.arc(px, py - 32, headW / 2, Math.PI * 1.2, Math.PI * 1.5);
-            ctx.stroke();
-        }
-        ctx.restore();
-    }
 
     // v3.32: Natural Exit Ramp Blending (Gore Area + Chevrons)
     if (gameState === STATE.EXITING) {
