@@ -1,5 +1,5 @@
 /**
- * preSpace - ゲームロジック
+ * presSpace-global - ゲームロジック
  */
 
 const canvas = document.getElementById('gameCanvas');
@@ -441,7 +441,7 @@ function updateUIFlow() {
     // 将来的に必要であれば、この関数で論理状態の更新を処理できます。
 }
 
-// Resize Handling
+// リサイズ処理
 // リサイズ処理
 function resize() {
     // v2.36: 動的解像度（レスポンシブ）
@@ -502,11 +502,11 @@ window.addEventListener('keydown', (e) => {
             shopSelection = (shopSelection - 1 + SKINS.length) % SKINS.length;
             soundManager.playUI();
         } else if (e.code === 'Space' || e.code === 'Enter') {
-            tryBuySkin(shopSelection); // Reverted to original tryBuySkin
+            tryBuySkin(shopSelection); // 元のtryBuySkinに戻しました
             soundManager.playUI();
         } else if (e.code === 'KeyS' || e.code === 'Escape') {
-            gameState = STATE.TITLE; // Reverted to original gameState = STATE.TITLE
-            saveGameData(); // Reverted to original saveGameData()
+            gameState = STATE.TITLE; // 元のgameState = STATE.TITLEに戻しました
+            saveGameData(); // 元のsaveGameData()に戻しました
             soundManager.playUI();
         }
     }
@@ -518,7 +518,7 @@ window.addEventListener('keydown', (e) => {
             soundManager.playUI();
         } else if (e.code === 'ArrowUp' || e.code === 'ArrowLeft') {
             selectLane = 0; // GO車線
-            soundManager.playUI(); // Changed from playCoin
+            soundManager.playUI(); // playCoinから変更
         }
         if (e.code === 'KeyS') {
             gameState = STATE.SHOP;
@@ -631,7 +631,7 @@ function startGame() {
     if (showTitleInstruction) {
         // v2.33: 画面中央に固定（ワールド計算ではない）
         // テキストは常に画面中央(0.5w)に描画されるため、パーティクルもそこにあるべき。
-        spawnShatterParticles(canvas.width / 2, canvas.height / 2 + 60, '#ffffff'); // White
+        spawnShatterParticles(canvas.width / 2, canvas.height / 2 + 60, '#ffffff'); // 白
         showTitleInstruction = false;
     }
 
@@ -648,7 +648,7 @@ function startGame() {
 
     // 選択ドライブのセットアップ
     const centerY = canvas.height / 2;
-    // Lane 0: Y = centerY + 64 (DrivingY)
+    // レーン0: Y = centerY + 64 (走行Y)
     // Lane 1: Y = centerY - 150 (出口車線 - 視覚に合わせて調整)
     selectY = centerY + 64;
 
@@ -1135,7 +1135,7 @@ function update(dt, rawDt = dt) {
         // Maintain X speed (Aligned)
         car.x += car.vx;
 
-        // Move Vertically (Merge)
+        // 垂直移動（合流）
         const dy = targetY - car.y; // Negative value (Starts at ~ -350)
 
         // Smooth merge up
@@ -1403,7 +1403,7 @@ function triggerCrash(obstacle) {
         contactX = (cx < ox) ? (ox - obstacle.w / 2) : (ox + obstacle.w / 2);
         contactY = Math.max(obstacle.y, Math.min(obstacle.y + obstacle.h, cy));
     } else {
-        // Vertical Hit
+        // 垂直ヒット
         car.vy = -car.vy * restitution;
         car.vx *= friction;
         // v2.61: Contact Point Calculation
@@ -1438,7 +1438,7 @@ function triggerCrash(obstacle) {
 
         normalX = (cx < ox) ? -1 : 1;
     } else {
-        // Vertical Hit
+        // 垂直ヒット
         normalY = (cy < oy) ? -1 : 1;
     }
 
@@ -1946,7 +1946,7 @@ function draw() {
             ctx.fillText("TAP / SPACE", titleX, centerY + 60);
         }
 
-        // v3.57: Only show UI elements (Score, Options, Version) checking for Input Mode
+        // v3.57: 入力モードを確認してUI要素（スコア、オプション、バージョン）のみを表示
         if (gameState === STATE.TITLE || gameState === STATE.SELECT_MODE) {
             // v2.38: Display High Score on Title
             ctx.font = '900 30px Inter, sans-serif';
@@ -1961,7 +1961,7 @@ function draw() {
             ctx.font = '900 20px Inter, sans-serif';
             const verX = titleX + 320; // Moved right as requested
             const verY = centerY + 90;
-            ctx.fillText("Ver01.11.01.10日1", verX, verY);
+            ctx.fillText("Ver01.11.15.34日1", verX, verY);
 
             // v2.50: Shop Prompt
             ctx.font = '20px Inter, sans-serif';
@@ -1998,7 +1998,7 @@ function draw() {
         if (levelMarking.x > cameraX - 1000 && levelMarking.x < cameraX + canvas.width + 1000) {
             ctx.save();
             ctx.textAlign = 'center';
-            // v2.30.27: Vertically Centered (+35 offset for 100px font)
+            // v2.30.27: 垂直方向中央揃え（100pxフォント用に+35オフセット）
             const leftLaneY = centerY - 70;
             const drivingY = centerY + 68;
 
@@ -2609,7 +2609,7 @@ function drawSuperCar(skin, length, width) {
     const halfL = length / 2;
     const w = width / 2;
 
-    // Chassis - Very Aerodynamic
+    // シャーシ - 非常に空気抵抗が少ない
     ctx.beginPath();
     ctx.fillStyle = skin.body;
     ctx.moveTo(-halfL, -w + 5);
@@ -2714,7 +2714,7 @@ function drawVan(skin, length, width) {
     ctx.fill();
     ctx.shadowBlur = 0;
 
-    // Tail lights (Vertical)
+    // テールライト（垂直）
     ctx.fillStyle = '#ff0000';
     ctx.fillRect(-halfL, -w + 5, 2, 10);
     ctx.fillRect(-halfL, w - 15, 2, 10);
