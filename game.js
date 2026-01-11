@@ -2819,7 +2819,6 @@ function drawCar(x, y, skin, scale) {
         // Blink every 300ms
         const blink = Math.floor(Date.now() / 300) % 2 === 0;
         if (blink) {
-            ctx.fillStyle = '#ffaa00'; // Orange
             ctx.fillStyle = '#ff8800'; // Bright Orange
             ctx.shadowColor = '#ff8800';
             ctx.shadowBlur = 20; // Stronger glow
