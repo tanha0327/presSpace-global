@@ -125,6 +125,11 @@ let isMobileView = false;
 let vw = 800; // v3.111: 仮想的な横幅
 let vh = 600; // v3.111: 仮想的な縦幅
 
+// v3.116: Input State Globals for U-drift
+const keys = {}; // keyboard state
+let touchStart = { x: 0, y: 0, time: 0 };
+let touchEnd = { x: 0, y: 0, time: 0 };
+
 // v2.60: スキンデータ
 const SKINS = [
     { id: 'default', name: 'PANDA 86', model: 'coupe', color: '#ffffff', body: '#ffffff', detail: '#111111', price: 0 },
@@ -153,6 +158,7 @@ class SoundManager {
         this.engineGain = null;
         this.isMuted = false;
         this.initialized = false;
+        this.lastBlinkCycle = 0; // v3.120: ブリンカー音の間隔制御
     }
 
     init() {
@@ -308,6 +314,42 @@ class SoundManager {
         g.connect(this.gainNode);
         osc.start();
         osc.stop(this.ctx.currentTime + 0.1);
+    }
+
+    // v3.120: ウィンカー音 (カチカチ音)
+    playBlinker(isHigh = true) {
+        if (!audioSettings.ui || !this.initialized) return;
+
+        // v3.126: よりリアルなリレー音 (クリック音)
+        // わずかなノイズと短い周波数スイープの組み合わせ
+        const osc = this.ctx.createOscillator();
+        osc.type = 'triangle';
+        const freq = isHigh ? 1200 : 1000;
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(freq * 0.5, this.ctx.currentTime + 0.02);
+
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(0.04, this.ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.03);
+
+        osc.connect(g);
+        g.connect(this.gainNode);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.03);
+
+        // 高域のクリック感を追加するための短いノイズ
+        const bufSize = this.ctx.sampleRate * 0.01;
+        const buf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+        const noise = this.ctx.createBufferSource();
+        noise.buffer = buf;
+        const noiseGain = this.ctx.createGain();
+        noiseGain.gain.setValueAtTime(0.02, this.ctx.currentTime);
+        noiseGain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.01);
+        noise.connect(noiseGain);
+        noiseGain.connect(this.gainNode);
+        noise.start();
     }
 }
 
@@ -477,6 +519,8 @@ resize();
 
 // 入力
 window.addEventListener('keydown', (e) => {
+    keys[e.code] = true; // v3.116: Key Tracking
+
     // v3.40: オーディオ設定の切り替え
     if (e.code === 'KeyA') {
         showAudioMenu = !showAudioMenu;
@@ -533,56 +577,75 @@ window.addEventListener('keydown', (e) => {
         }
     }
 
-    // v3.00: 車線選択（タイトル / 選択モード）
+    // v3.00: 車線選択 (タイトル / 選択モード)
     if (gameState === STATE.TITLE || gameState === STATE.SELECT_MODE) {
         if (e.code === 'ArrowDown' || e.code === 'ArrowRight') {
             selectLane = 1; // ショップ/出口
             soundManager.playUI();
         } else if (e.code === 'ArrowUp' || e.code === 'ArrowLeft') {
             selectLane = 0; // GO車線
-            soundManager.playUI(); // playCoinから変更
+            soundManager.playUI();
         }
-
     }
+});
+
+window.addEventListener('keyup', (e) => {
+    keys[e.code] = false; // v3.116: Key Tracking
 });
 
 // モバイル対応 (v2.12)
 window.addEventListener('touchstart', (e) => {
-    // クイックタップでのスクロール/ズームを防ぐためにデフォルトを阻止
     if (e.target === canvas) {
         e.preventDefault();
-
-        // v3.55: ミュートボタンのタッチ判定
         const touch = e.touches[0];
         const rect = canvas.getBoundingClientRect();
-        const x = touch.clientX - rect.left;
-        const y = touch.clientY - rect.top;
-
-        if (checkMuteButton(x, y)) return;
-
-        handleInput(e);
+        touchStart.x = (touch.clientX - rect.left) / baseScale;
+        touchStart.y = (touch.clientY - rect.top) / baseScale;
+        touchStart.time = Date.now();
     }
 }, { passive: false });
 
-// v3.55: ミュートボタンのマウスクリック（デスクトップ）
+window.addEventListener('touchend', (e) => {
+    if (e.target === canvas) {
+        const touch = e.changedTouches[0];
+        const rect = canvas.getBoundingClientRect();
+        touchEnd.x = (touch.clientX - rect.left) / baseScale;
+        touchEnd.y = (touch.clientY - rect.top) / baseScale;
+        touchEnd.time = Date.now();
+
+        const dx = touchEnd.x - touchStart.x;
+        const dy = touchEnd.y - touchStart.y;
+        const dt = touchEnd.time - touchStart.time;
+
+        if (checkMuteButton(touchEnd.x, touchEnd.y)) return;
+
+        if (dt < 300) { // Quick gesture
+            if (dy < -50 && Math.abs(dx) < Math.abs(dy)) {
+                // Swipe Up
+                handleInput({ swipeUp: true });
+            } else {
+                // Tap
+                handleInput({});
+            }
+        }
+    }
+});
+
 window.addEventListener('mousedown', (e) => {
     if (e.target === canvas) {
         const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
+        const x = (e.clientX - rect.left) / baseScale;
+        const y = (e.clientY - rect.top) / baseScale;
 
         if (checkMuteButton(x, y)) return;
-
         handleInput(e);
     }
 });
 
 function checkMuteButton(x, y) {
-    // ボタン領域: 右上（キャンバス幅基準）
-    // 座標: x > width - 60, y < 60
     const btnSize = 50;
     const margin = 20;
-    const btnX = canvas.width - margin - btnSize;
+    const btnX = vw - margin - btnSize;
     const btnY = margin;
 
     if (x >= btnX && x <= btnX + btnSize && y >= btnY && y <= btnY + btnSize) {
@@ -593,10 +656,7 @@ function checkMuteButton(x, y) {
 }
 
 function handleInput(e) {
-    // v3.73: Safeguard against missing event object
     if (!e) e = {};
-
-    // v3.00: 最初のジェスチャでAudioContextを初期化
     soundManager.init();
     soundManager.startEngine();
 
@@ -604,7 +664,6 @@ function handleInput(e) {
         if (selectLane === 0) {
             startGame();
         } else {
-            // v3.31: 高速な「ピットイン」スタイル（クイックアクセスのために短縮）
             gameState = STATE.EXITING;
             exitTargetX = car.x + 1000;
             exitTransitionTimer = 3.0;
@@ -632,8 +691,13 @@ function handleInput(e) {
                 return; // 入力を無視
             }
         }
-        // v3.72: ドーナツドリフト (Shift + Space)
-        if (e.shiftKey) {
+
+        // v3.116: U-drift (Up + Space)
+        const isUpPressed = keys['ArrowUp'] || e.swipeUp;
+        if (isUpPressed) {
+            startDrift('udrift');
+        } else if (e.shiftKey) {
+            // v3.72: ドーナツドリフト (Shift + Space)
             startDrift('donut');
         } else {
             startDrift('normal');
@@ -916,6 +980,20 @@ function startDrift(type = 'normal') {
         // v3.101: ゆっくり回る (0.8 -> 0.4)
         car.spin = (Math.random() < 0.5 ? -1 : 1) * 0.4;
         car.totalRotation = 0; // v3.73: 回転量追跡
+    } else if (type === 'udrift') {
+        // v3.116 - v3.125: U-Orbit Park (The "G" Shape)
+        const spotX = round.spot.x;
+        const spotY = round.spot.y;
+        const pylonX = spotX + 150; // Pole slightly further ahead for wider G
+
+        car.driftStage = 0; // Stage 0: Launch/Overshoot
+        car.vx = round.speed * 1.6; // High speed launch
+        car.vy = -4; // Initially pull slightly up to clear lane
+        car.coinAwarded = false;
+
+        // Initial angle: Start turning towards shoulder
+        car.angle = -0.3;
+        car.spin = 0;
     } else {
         // v2.7 ターゲット指定ドリフト物理
         // 停止するまでに車が正確にround.spot.yまでスライドするようにしたい。
@@ -1163,14 +1241,6 @@ function update(dt, rawDt = dt) {
             // If we want them to enter the shop, we might need to steer them right eventually?
             // "The car stays in the main lane... The 3rd lane still appears visually."
             // "Space key to..." (Future)
-            // So for now, even during transition timer, keep them in main lane?
-            // Actually, transition timer implies AUTO EXIT.
-            // If we changed logic to "Blinker only", maybe we shouldn't have auto-transition yet?
-            // "Pressing Down... blinker... 3rd lane appears... Space to..."
-            // So Down key should NOT trigger transition timer?
-            // "Auto-Exit" at line 1119 triggers `shopTransitionTimer = 1.0`.
-            // We should probably DISABLE auto-exit for now too if the user wants separate Space logic?
-            // The user said: "Wait for Space key instruction".
             // So for now, hitting the gantry with blinker on should probably NOT exit automatically?
             // But currently it DOES (lines 1110-1120).
             // I will leave existing auto-exit logic for now (maybe that's what moves them?), 
@@ -1329,6 +1399,71 @@ function update(dt, rawDt = dt) {
             // 完了後の余韻（少し滑って止まる）
             car.vx *= 0.8;
             car.vy *= 0.8;
+        } else if (car.driftType === 'udrift') {
+            // v3.125: "U-Orbit Park" (Rotated G-shape)
+            const spotY = round.spot.y;
+            const spotX = round.spot.x;
+            const pylonX = spotX + 150;
+
+            // Physics: Centripetal force towards pylon
+            const dx = pylonX - car.x;
+            const dy = spotY - car.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (car.driftStage < 3) {
+                // Angle Tracking: "車体は常にポールの中心を向いている"
+                const angleToPylon = Math.atan2(dy, dx);
+                car.angle += (angleToPylon - car.angle) * 0.15;
+            }
+
+            if (car.driftStage === 0) {
+                // Stage 0: Launch past pylon
+                car.vx += 0.15;
+                car.vy -= 0.15; // Pulling up
+                if (car.x > pylonX + 100) car.driftStage = 1;
+
+            } else if (car.driftStage === 1) {
+                // Stage 1: Sweep Down/Right (G's starting curve)
+                // Gravity pulls us around in a wide arc
+                const pullX = 0.5;
+                const pullY = 1.0;
+                car.vx += (dx / dist) * pullX;
+                car.vy += (dy / dist) * pullY;
+
+                if (car.y > spotY + 100) car.driftStage = 2;
+
+            } else if (car.driftStage === 2) {
+                // Stage 2: Return Orbit (G's outer bottom loop)
+                const pull = 1.4; // Tighter pull to head back X-
+                car.vx += (dx / dist) * pull;
+                car.vy += (dy / dist) * pull;
+
+                // Award Coin at the peak of the turnaround
+                if (!car.coinAwarded && car.x < pylonX) {
+                    car.coinAwarded = true;
+                    coins++;
+                    soundManager.playCoin();
+                    addFloatingScore(car.x, car.y, 0, 'coin');
+                }
+
+                // If we are heading back behind the pylon
+                if (car.x < pylonX - 50 && car.vy < 0) car.driftStage = 3;
+
+            } else if (car.driftStage === 3) {
+                // Stage 3: Hook/Finish (Align forward behind pylon)
+                const pullX = (spotX - car.x) * 0.08;
+                const pullY = (spotY - car.y) * 0.08;
+                car.vx += pullX;
+                car.vy += pullY;
+
+                // Align to FORWARD (0 radians)
+                car.angle += (0 - car.angle) * 0.18;
+
+                if (dist < 30) car.vx *= 0.8;
+            }
+
+            car.vx *= 0.975; // Sweepy friction
+            car.vy *= 0.975;
         } else {
             const targetAngle = -Math.PI;
             angleDiff = targetAngle - car.angle; // Assign to outer var
@@ -1652,11 +1787,14 @@ function checkResult() {
 
     const angleErr = Math.abs(Math.abs(car.angle) - Math.PI);
     // v3.72: ドーナツドリフトは角度制限を緩和（スタイリッシュさ優先）
-    // v3.72: ドーナツドリフトは角度制限を緩和（スタイリッシュさ優先）
     // v3.103: 'donut_finish' も判定対象に含める
     if (car.driftType === 'donut' || car.driftType === 'donut_finish') {
+        addStylish(3000, "DONUT!"); // v3.80: Higher score for donuts
         // ドーナツは回転終了後（0度）で止まるため、角度チェックはスキップ
+    } else if (car.driftType === 'udrift') {
+        addStylish(8000, "U-ORBIT PARK!"); // v3.118: Legendary maneuver
     } else {
+        addStylish(1000, "STYLISH!");
         if (angleErr > 0.8) {
             failRound("BAD ANGLE");
             return;
@@ -1672,8 +1810,9 @@ function checkResult() {
     const totalDiff = Math.sqrt(dist * dist + distY * distY);
 
     if (totalDiff < 50) {
-        // v3.72: ドーナツ成功なら特別評価
-        if (car.driftType === 'donut' || car.driftType === 'donut_finish') nextRound("STYLISH!");
+        // v3.118: U-Orbit success (facing forward is fine)
+        if (car.driftType === 'udrift') nextRound("PERFECT");
+        else if (car.driftType === 'donut' || car.driftType === 'donut_finish') nextRound("STYLISH!");
         else nextRound("PERFECT");
     }
     else if (totalDiff < 100) { nextRound("GREAT"); }
@@ -2124,6 +2263,54 @@ function draw() {
     // v3.70 - v3.32: Old Pit-In Code REMOVED
 
 
+    // v3.118: U-Drift Pylon Visual (The "Pole" to curve around)
+    if (round.spot && (gameState === STATE.PLAYING || gameState === STATE.DRIFTING)) {
+        ctx.save();
+        // v3.118: Pylon is at front-edge of spot (X + 150 for G-shape)
+        const px = round.spot.x + 150;
+        const py = round.spot.y;
+
+        // Only draw if safe distance/onscreen
+        if (px > cameraX - 100 && px < cameraX + vw + 100) {
+            // 1. Pole with Metallic Gradient
+            const poleGrad = ctx.createLinearGradient(px - 3, 0, px + 3, 0);
+            poleGrad.addColorStop(0, '#444');
+            poleGrad.addColorStop(0.5, '#aaa');
+            poleGrad.addColorStop(1, '#444');
+            ctx.fillStyle = poleGrad;
+            ctx.fillRect(px - 3, py - 20, 6, 35); // Slightly thicker pole
+
+            // 2. Head Housing (Trapezoid/Rounded)
+            ctx.fillStyle = '#ff8c00'; // Orange
+            const headW = 18;
+            const headH = 24;
+
+            // Base of the head
+            ctx.beginPath();
+            ctx.moveTo(px - headW / 2, py - 15);
+            ctx.lineTo(px + headW / 2, py - 15);
+            ctx.lineTo(px + headW / 2 + 2, py - 25);
+            ctx.lineTo(px - headW / 2 - 2, py - 25);
+            ctx.fill();
+
+            // Main Body (Dome top)
+            ctx.beginPath();
+            ctx.arc(px, py - 32, headW / 2 + 2, Math.PI, 0); // Dome
+            ctx.lineTo(px + headW / 2 + 2, py - 25);
+            ctx.lineTo(px - headW / 2 - 2, py - 25);
+            ctx.closePath();
+            ctx.fill();
+
+            // 3. Glossy Highlight
+            ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(px, py - 32, headW / 2, Math.PI * 1.2, Math.PI * 1.5);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
     // v3.32: Natural Exit Ramp Blending (Gore Area + Chevrons)
     if (gameState === STATE.EXITING) {
         ctx.save();
@@ -2313,7 +2500,7 @@ function draw() {
             ctx.font = '900 20px Inter, sans-serif';
             const verX = titleX + 320; // Moved right as requested
             const verY = centerY - 10; // v3.98: Moved down
-            ctx.fillText("Ver01.11.18.04.45s", verX, verY);
+            ctx.fillText("Ver01.11.18.52.00s", verX, verY);
 
 
         }
@@ -2884,7 +3071,16 @@ function drawCar(x, y, skin, scale) {
     // v3.110: Blinker Logic (Right Blinker for Shop Selection)
     if ((gameState === STATE.SELECT_MODE || gameState === STATE.TITLE) && selectLane === 1) {
         // Blink every 300ms
-        const blink = Math.floor(Date.now() / 300) % 2 === 0;
+        const blinkCycle = Math.floor(Date.now() / 300);
+        const blink = blinkCycle % 2 === 0;
+
+        // v3.120: 音のトリガー
+        if (soundManager.lastBlinkCycle !== blinkCycle) {
+            // v3.126: ON/OFFの両方で音を鳴らす (カチ・コチ)
+            soundManager.playBlinker(blink);
+            soundManager.lastBlinkCycle = blinkCycle;
+        }
+
         if (blink) {
             ctx.fillStyle = '#ff8800'; // Bright Orange
             ctx.shadowColor = '#ff8800';
