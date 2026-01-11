@@ -13,6 +13,6 @@ Space key to start, Space key to drift.
 - **SPACE / TAP**: All actions
 
 ## Version
-Current Version: Ver01.11.15.34日1
+Current Version: Ver1.11.15.23s
 
 ## hello world

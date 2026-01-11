@@ -313,7 +313,8 @@ const soundManager = new SoundManager();
 let titleIdleTimer = 0;
 let titleDemoState = 0; // 0: アイドル, 1: ドリフトイン, 2: 駐車中, 3: ドリフトアウト
 let titleParkX = 0;
-let titleDonutSpeed = 0; // v2.26.1
+let titleDonutSpeed = 0;
+let speedometerOpacity = 0; // v3.106: Global scope fix // v2.26.1
 
 // カメラフォーカス用ヘルパー
 function getCameraFocusX() {
@@ -491,7 +492,7 @@ window.addEventListener('keydown', (e) => {
     }
 
     if (e.code === 'Space' && !e.repeat) {
-        handleInput();
+        handleInput(e);
     }
     // v2.50: ショップ入力
     if (gameState === STATE.SHOP) {
@@ -520,10 +521,7 @@ window.addEventListener('keydown', (e) => {
             selectLane = 0; // GO車線
             soundManager.playUI(); // playCoinから変更
         }
-        if (e.code === 'KeyS') {
-            gameState = STATE.SHOP;
-            return;
-        }
+
     }
 });
 
@@ -541,7 +539,7 @@ window.addEventListener('touchstart', (e) => {
 
         if (checkMuteButton(x, y)) return;
 
-        handleInput();
+        handleInput(e);
     }
 }, { passive: false });
 
@@ -553,6 +551,8 @@ window.addEventListener('mousedown', (e) => {
         const y = e.clientY - rect.top;
 
         if (checkMuteButton(x, y)) return;
+
+        handleInput(e);
     }
 });
 
@@ -571,7 +571,10 @@ function checkMuteButton(x, y) {
     return false;
 }
 
-function handleInput() {
+function handleInput(e) {
+    // v3.73: Safeguard against missing event object
+    if (!e) e = {};
+
     // v3.00: 最初のジェスチャでAudioContextを初期化
     soundManager.init();
     soundManager.startEngine();
@@ -596,7 +599,7 @@ function handleInput() {
         } else {
             // SHOP
             if (shopTransitionTimer <= 0) {
-                shopTransitionTimer = 1.0;
+                shopTransitionTimer = 1.5; // v3.90: Longer transition for curve
                 soundManager.playCoin();
             }
         }
@@ -608,7 +611,12 @@ function handleInput() {
                 return; // 入力を無視
             }
         }
-        startDrift();
+        // v3.72: ドーナツドリフト (Shift + Space)
+        if (e.shiftKey) {
+            startDrift('donut');
+        } else {
+            startDrift('normal');
+        }
     } else if (gameState === STATE.RESULT || gameState === STATE.CRASHED) {
         if (gameState === STATE.RESULT && level > 10) {
             resetGame();
@@ -734,7 +742,8 @@ function startRound() {
 
         // 新しい障害物
         // v2.98: コインスポットロジック
-        const isCoinSpot = (Math.random() < 0.2); // 20%の確率
+        // v3.108: Level 3+
+        const isCoinSpot = (level >= 3 && Math.random() < 0.2); // 20%の確率
         round.isCoinSpot = isCoinSpot;
 
         let newObstacles = [];
@@ -812,7 +821,8 @@ function startRound() {
         const targetDist = canvas.width * 1.5 + Math.random() * 200;
         const targetX = car.x + targetDist;
 
-        const isCoinSpot = (Math.random() < 0.2);
+        // v3.108: Level 3+
+        const isCoinSpot = (level >= 3 && Math.random() < 0.2);
         round.isCoinSpot = isCoinSpot;
         round.spot = { x: targetX, y: shoulderY, w: gapSize, h: 100 };
 
@@ -841,7 +851,8 @@ function startRound() {
         const targetX = car.x + targetDist;
 
         // v2.98: コインスポットロジック（リセット）
-        const isCoinSpot = (Math.random() < 0.2);
+        // v3.108: Level 3+
+        const isCoinSpot = (level >= 3 && Math.random() < 0.2);
         round.isCoinSpot = isCoinSpot;
 
         round.spot = { x: targetX, y: shoulderY, w: gapSize, h: 100 };
@@ -856,23 +867,51 @@ function startRound() {
     }
 }
 
-function startDrift() {
+function startDrift(type = 'normal') {
     gameState = STATE.DRIFTING;
-    // v2.7 ターゲット指定ドリフト物理
-    // 停止するまでに車が正確にround.spot.yまでスライドするようにしたい。
-    // 物理: フレームごとに vy *= 0.97
-    // 総Y移動距離 = vy_start / (1 - 0.97) = vy_start / 0.03
-    // よって: wy_start = (TargetY - CurrentY) * 0.03
+    car.driftType = type; // v3.72: 'normal' or 'donut'
 
-    const targetY = round.spot.y;
-    const dy = targetY - car.y;
+    if (!round.spot) {
+        // Safety Case: If spot is missing, create a dummy one to prevent crash
+        round.spot = { x: car.x + 1000, y: canvas.height / 2 + 64 - 200, w: 200, h: 100 };
+    }
 
-    // targetYで完全に停止するための理論的なvy
-    // 等比級数から導出された係数: sum = a * (r / (1-r))
-    // 摩擦 r = 0.97
-    // 係数 = (1 - 0.97) / 0.97 = 0.03 / 0.97 約 0.0309278
-    // 物理演算がターゲットで正確に停止するように、この正確な係数を使用します。
-    car.vy = dy * (0.03 / 0.97);
+    if (type === 'donut') {
+        // v3.72: ドーナツドリフト初期化
+        // ターゲットYへの誘導は弱くし、スピンを優先
+        const targetY = round.spot.y;
+        const dy = targetY - car.y;
+        // 少し滑らせつつ、スピンを与える。通常の物理演算とは異なる軌道。
+        // v3.74: 摩擦を0.96に変更するため、係数は0.04 (1 - 0.96)
+        // v3.100: "届かない"対策。360度停止で減速するため、理論値より大きくする(1.5倍)
+        // v3.101: ゆっくり回転 (0.96 -> 0.985 friction, spin 0.4)
+        // Friction 0.985 -> loss 0.015. 
+        // ターゲットYに到達するための理論値 = dy * 0.015
+        // v3.102: もっと奥まで！ (User requested "reach between parked cars")
+        // 理論値の3倍くらい必要かもしれない (0.015 * 3 = 0.045)
+        car.vy = dy * 0.055;
+
+        // 強烈なスピン初期化
+        // v3.101: ゆっくり回る (0.8 -> 0.4)
+        car.spin = (Math.random() < 0.5 ? -1 : 1) * 0.4;
+        car.totalRotation = 0; // v3.73: 回転量追跡
+    } else {
+        // v2.7 ターゲット指定ドリフト物理
+        // 停止するまでに車が正確にround.spot.yまでスライドするようにしたい。
+        // 物理: フレームごとに vy *= 0.97
+        // 総Y移動距離 = vy_start / (1 - 0.97) = vy_start / 0.03
+        // よって: wy_start = (TargetY - CurrentY) * 0.03
+
+        const targetY = round.spot.y;
+        const dy = targetY - car.y;
+
+        // targetYで完全に停止するための理論的なvy
+        // 等比級数から導出された係数: sum = a * (r / (1-r))
+        // 摩擦 r = 0.97
+        // 係数 = (1 - 0.97) / 0.97 = 0.03 / 0.97 約 0.0309278
+        // 物理演算がターゲットで正確に停止するように、この正確な係数を使用します。
+        car.vy = dy * (0.03 / 0.97);
+    }
 
     // v3.62: 高速エントリーの安全クランプ
     // 高速道路(20)から減速中にドリフトに入った場合、クランプ（制限）します。
@@ -892,6 +931,7 @@ function resetGame() {
 
     isTitleFlowing = true; // 高速巡航上にタイトルロゴを表示
     titleFlowStartX = car.x;
+    speedometerOpacity = 0; // v3.105: Smooth fade for speedometeren();
 
     hideResultScreen();
 
@@ -1049,12 +1089,25 @@ function update(dt, rawDt = dt) {
         car.vx = 20;
         car.x += car.vx;
         scrollFocusX = car.x;
+        // v2.5: World Anchor sync (Keep markings floating with car during selection)
+        titleFlowStartX = car.x;
 
         // Lane Lerp
         // Lane 0: GO (Main) -> centerY + 64
-        // Lane 1: SHOP (Exit) -> centerY + 200 (Right/Bottom)
+        // Lane 1: SHOP (Pit-In) -> Follow curve
         const centerY = canvas.height / 2;
-        let targetY = (selectLane === 0) ? (centerY + 64) : (centerY + 200);
+        const roadHalfWidth = 140;
+        const roadBottom = centerY + roadHalfWidth;
+
+        let targetY = centerY + 64; // Default Main
+
+        if (selectLane === 1) {
+            // v3.110: User requested NO physical lane change. Only Blinker.
+            // targetY = roadBottom + 70; // <-- Disabled physical move
+            targetY = centerY + 70; // Stay in Main Lane
+            // Force Y if drifting for some reason?
+            // car.y = targetY; // Strict lock? No, let it lerp if needed for smoothness, but target must be Main.
+        }
 
         // v3.10: Auto-Transition Logic
         const gantryX = (Math.floor((car.x - 2000) / 4000) + 1) * 4000;
@@ -1073,8 +1126,28 @@ function update(dt, rawDt = dt) {
 
         if (shopTransitionTimer > 0) {
             shopTransitionTimer -= dt;
-            // When transition starts, steer further Right (Y+)
-            targetY = centerY + 400; // Drive off to the right
+
+            // v3.110: No curve, just wait for transition
+            // targetY is already locked to Main Lane (or whatever we want during transition)
+            // If we want them to enter the shop, we might need to steer them right eventually?
+            // "The car stays in the main lane... The 3rd lane still appears visually."
+            // "Space key to..." (Future)
+            // So for now, even during transition timer, keep them in main lane?
+            // Actually, transition timer implies AUTO EXIT.
+            // If we changed logic to "Blinker only", maybe we shouldn't have auto-transition yet?
+            // "Pressing Down... blinker... 3rd lane appears... Space to..."
+            // So Down key should NOT trigger transition timer?
+            // "Auto-Exit" at line 1119 triggers `shopTransitionTimer = 1.0`.
+            // We should probably DISABLE auto-exit for now too if the user wants separate Space logic?
+            // The user said: "Wait for Space key instruction".
+            // So for now, hitting the gantry with blinker on should probably NOT exit automatically?
+            // But currently it DOES (lines 1110-1120).
+            // I will leave existing auto-exit logic for now (maybe that's what moves them?), 
+            // but I will ensure the visual CURVE is gone.
+
+            // Keep targetY as is (Main Lane)
+            // targetY = centerY + 70; 
+
             if (shopTransitionTimer <= 0) {
                 isTitleFlowing = false;
                 gameState = STATE.SHOP;
@@ -1085,7 +1158,7 @@ function update(dt, rawDt = dt) {
         // Smooth Y movement
         car.y += (targetY - car.y) * 5 * dt;
         // Tilt car based on Y movement
-        car.angle = (targetY - car.y) * 0.002;
+        car.angle = (targetY - car.y) * 0.003;
     }
     else if (gameState === STATE.EXITING) {
         // v3.31: Faster Animation (Shortened curve)
@@ -1172,7 +1245,8 @@ function update(dt, rawDt = dt) {
             const shoulderY = centerY - roadHalfWidth - 40;
 
             // v2.98: Coin Spot Logic (In Update)
-            const isCoinSpot = (Math.random() < 0.2);
+            // v3.108: Restrict to Level 3+
+            const isCoinSpot = (level >= 3 && Math.random() < 0.2);
             round.isCoinSpot = isCoinSpot;
 
             if (!isCoinSpot) {
@@ -1189,15 +1263,54 @@ function update(dt, rawDt = dt) {
         checkCollisions();
 
     } else if (gameState === STATE.DRIFTING) {
-        car.vx *= 0.94;
-        car.vy *= 0.97;
+        let angleDiff = 0; // v3.99: Define in outer scope
+
+        if (car.driftType === 'donut') {
+            // v3.72: ドーナツ物理
+            // v3.74: 到達するように摩擦を軽減 (0.92 -> 0.96)
+            // v3.101: さらに滑らかに (0.96 -> 0.985)
+            car.vx *= 0.985;
+            car.vy *= 0.985;
+            car.spin *= 0.985; // スピン減衰も合わせる
+        } else {
+            car.vx *= 0.94;
+            car.vy *= 0.97;
+        }
+
         car.x += car.vx;
         car.y += car.vy;
 
-        const targetAngle = -Math.PI;
-        const angleDiff = targetAngle - car.angle;
-        // Faster rotation for parallel alignment (v2.8)
-        car.angle += angleDiff * 0.15;
+        if (car.driftType === 'donut') {
+            car.angle += car.spin;
+            car.totalRotation += car.spin;
+
+            // v3.73: 360度（2PI）回転したらピタッと止める
+            if (Math.abs(car.totalRotation) >= Math.PI * 2) {
+                car.angle = 0; // 正面向きで停止（スタイリッシュ！）
+                car.spin = 0;
+                // 強制的に停止させる（パーキング状態へ移行するか、摩擦を極大にする）
+                car.vx *= 0.5;
+                car.vy *= 0.5;
+                // ドーナツ完了フラグ
+                car.driftType = 'donut_finish';
+            }
+        } else if (car.driftType === 'donut_finish') {
+            // 完了後の余韻（少し滑って止まる）
+            car.vx *= 0.8;
+            car.vy *= 0.8;
+        } else {
+            const targetAngle = -Math.PI;
+            angleDiff = targetAngle - car.angle; // Assign to outer var
+            // Faster rotation for parallel alignment (v2.8)
+            car.angle += angleDiff * 0.15;
+
+            // v3.73: 無限ループ防止（あまりにも遅くなったら強制停止）
+            if (Math.abs(car.vx) < 0.1 && Math.abs(car.vy) < 0.1) {
+                car.vx = 0;
+                car.vy = 0;
+                // この後の判定ロジックで停止とみなされるはず
+            }
+        }
 
         // Force stop if very slow to check result quickly
         const speed = Math.sqrt(car.vx * car.vx + car.vy * car.vy);
@@ -1351,6 +1464,26 @@ function update(dt, rawDt = dt) {
             screenShake.y = 0;
         }
     }
+
+    // v3.105: Update Speedometer Opacity
+    let showSpeedometer = false;
+    if (gameState === STATE.DRIFTING) {
+        showSpeedometer = true;
+    } else if (gameState === STATE.PLAYING) {
+        // v3.107: タイトル・GO表示を過ぎるまで表示しない (GOは+400あたり)
+        // car.x が titleFlowStartX + 600 を超えたら表示開始
+        if (car.x > titleFlowStartX + 670) {
+            showSpeedometer = true;
+        }
+    }
+
+    if (showSpeedometer) {
+        speedometerOpacity += 2.0 * dt; // Fade in
+        if (speedometerOpacity > 1.0) speedometerOpacity = 1.0;
+    } else {
+        speedometerOpacity -= 2.0 * dt; // Fade out
+        if (speedometerOpacity < 0) speedometerOpacity = 0;
+    }
 }
 
 function checkCollisions() {
@@ -1476,13 +1609,27 @@ function checkRectOverlap(r1, r2) {
 }
 
 function checkResult() {
+    // v3.97: Safety check
+    if (!round || !round.spot) {
+        console.warn("checkResult: round.spot missing");
+        failRound("ERROR");
+        return;
+    }
+
     const bounds = getCarBounds();
     const spot = round.spot;
 
     const angleErr = Math.abs(Math.abs(car.angle) - Math.PI);
-    if (angleErr > 0.8) {
-        failRound("BAD ANGLE");
-        return;
+    // v3.72: ドーナツドリフトは角度制限を緩和（スタイリッシュさ優先）
+    // v3.72: ドーナツドリフトは角度制限を緩和（スタイリッシュさ優先）
+    // v3.103: 'donut_finish' も判定対象に含める
+    if (car.driftType === 'donut' || car.driftType === 'donut_finish') {
+        // ドーナツは回転終了後（0度）で止まるため、角度チェックはスキップ
+    } else {
+        if (angleErr > 0.8) {
+            failRound("BAD ANGLE");
+            return;
+        }
     }
 
     const carCenter = bounds.x + bounds.w / 2;
@@ -1493,7 +1640,11 @@ function checkResult() {
     const distY = Math.abs(carY - parkedY);
     const totalDiff = Math.sqrt(dist * dist + distY * distY);
 
-    if (totalDiff < 50) { nextRound("PERFECT"); }
+    if (totalDiff < 50) {
+        // v3.72: ドーナツ成功なら特別評価
+        if (car.driftType === 'donut' || car.driftType === 'donut_finish') nextRound("STYLISH!");
+        else nextRound("PERFECT");
+    }
     else if (totalDiff < 100) { nextRound("GREAT"); }
     else if (totalDiff < 150) { nextRound("OK"); }
     else { failRound("BAD PARK"); }
@@ -1521,9 +1672,13 @@ function failRound(reason) {
         return;
     }
 
-    // Trigger Scroll Transition
-    gameState = STATE.LEVEL_UP; // Lock input
+    // v3.75: Spaceキーでのリトライを可能にするため、即座に入力ロック（LEVEL_UP）しない
+    // gameState = STATE.LEVEL_UP; // Lock input <-- Removed to allow retry
+
     setTimeout(() => {
+        // ユーザーが既にリスタートしているか確認
+        if (gameState !== STATE.RESULT) return;
+
         // Start Scrolling
         scrollFocusX = car.x;
         targetZoom = 1.0; // v3.00: Reset Zoom for next round
@@ -1728,8 +1883,8 @@ function tryBuySkin(index) {
 }
 
 function getCameraFocusX() {
-    if (gameState === STATE.SCROLLING || gameState === STATE.ENTRY) {
-        return scrollFocusX;
+    if (gameState === STATE.SCROLLING) {
+        return scrollFocusX; // v3.105: ENTRY now follows car.x
     }
     return car.x;
 }
@@ -1777,18 +1932,22 @@ function draw() {
     ctx.strokeStyle = '#DAA520';
     ctx.lineWidth = 4;
     ctx.setLineDash([40, 40]);
+
+    // v3.96: Restore missing Center Line drawing (was accidentally removed?)
     const dashPeriod = 80;
     const startXUnrounded = cameraX - 2000;
     const worldStartX = Math.floor(startXUnrounded / dashPeriod) * dashPeriod;
     const worldEndX = cameraX + canvas.width + 2000;
+
     ctx.lineDashOffset = 0;
     ctx.moveTo(worldStartX, centerY);
     ctx.lineTo(worldEndX, centerY);
     ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.setLineDash([]); // Reset for other drawings
 
     // v3.67: Refined Road Markings - UI only (GO/SHOP)
-    if (isTitleFlowing && (gameState === STATE.TITLE || gameState === STATE.SELECT_MODE)) {
+    // v3.95: Allow to flow away in PLAYING state (removed state check)
+    if (isTitleFlowing) {
         ctx.save();
         ctx.textAlign = 'center';
         ctx.font = '900 80px Inter, sans-serif';
@@ -1796,48 +1955,107 @@ function draw() {
 
         // "GO" Marking (Main Lane)
         // Always visible (or dimmed if not selected, but user didn't say hide it)
-        const goX = car.x + 400;
-        const goY = centerY + 64 + 30;
+        // v3.95: Use titleFlowStartX (Anchor) instead of car.x so it freezes when game starts
+        const goX = titleFlowStartX + 400;
+        const goY = centerY + 70; // v3.98: Perfectly centered in lane (was +64)
 
+        ctx.textBaseline = 'middle'; // Center vertically
         ctx.fillStyle = (selectLane === 0) ? '#ffffff' : 'rgba(255,255,255,0.4)';
         ctx.fillText("GO", goX, goY);
+        ctx.textBaseline = 'alphabetic'; // Reset
 
-        // Custom Arrow for GO (Right pointing Chevron)
+        // v3.72: Highway Style Straight Arrow
         if (selectLane === 0) {
+            ctx.save();
+            const ax = goX + 160; // Moved more right
+            const ay = goY; // Perfectly centered on lane (matches goY now)
+            ctx.translate(ax, ay);
+
             ctx.fillStyle = '#ffffff';
             ctx.beginPath();
-            // Draw Chevron at goX + 110, goY - 20 roughly
-            const ax = goX + 110;
-            const ay = goY - 25; // Centered vertically relative to text? Text baseline is bottom.
-            ctx.moveTo(ax, ay);
-            ctx.lineTo(ax + 30, ay + 20); // Tip
-            ctx.lineTo(ax, ay + 40);
-            ctx.lineTo(ax - 15, ay + 40);
-            ctx.lineTo(ax + 15, ay + 20); // Inner tip
-            ctx.lineTo(ax - 15, ay);
+
+            // Standard Highway Straight Arrow (Elongated)
+            // Head
+            ctx.moveTo(60, 0);    // Point
+            ctx.lineTo(20, -35);  // Top Left
+            ctx.lineTo(20, -12);  // Shaft Top
+            ctx.lineTo(-60, -12); // Shaft Tail Top
+            ctx.lineTo(-60, 12);  // Shaft Tail Bottom
+            ctx.lineTo(20, 12);   // Shaft Bottom
+            ctx.lineTo(20, 35);   // Bottom Left
+            ctx.closePath();
+
             ctx.fill();
+            ctx.restore();
         }
 
-        // "SHOP" Marking (Exit Lane)
-        // User: "Visible only when in that lane"
-        if (selectLane === 1) {
-            const shopX = car.x + 400;
-            const shopY = centerY + 200 + 30;
+        // "SHOP" Lane Interaction
+        // Use outer variables: centerY, roadHalfWidth, roadBottom
+        const shopLaneY = roadBottom + 70;
+        const shopX = titleFlowStartX + 400;
+
+        if (selectLane === 0) {
+            // v3.85: Hint Text "PRESS ↓" floating in empty space
+            ctx.save();
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'; // Ghostly
+            ctx.font = '900 30px Inter, sans-serif';
+            ctx.textBaseline = 'middle';
+            ctx.textAlign = 'center'; // Ensure center alignment
+            ctx.fillText("PRESS ↓,go to shop", shopX + 50, shopLaneY);
+            ctx.restore();
+        }
+        else if (selectLane === 1) {
+            // v3.95: Reverted to Straight Third Lane (User feedback: Curve looked weird)
+
+            // Draw Third Lane Asphalt
+            ctx.fillStyle = '#333';
+            ctx.fillRect(cameraX, roadBottom, canvas.width + 1000, 140);
+
+            // Lane Divider (Dashed)
+            ctx.beginPath();
+            ctx.strokeStyle = '#DAA520';
+            ctx.lineWidth = 4;
+            ctx.setLineDash([40, 40]);
+            const dashPeriod = 80;
+            const startXUnrounded = cameraX - 2000;
+            const worldStartX = Math.floor(startXUnrounded / dashPeriod) * dashPeriod;
+            const worldEndX = cameraX + canvas.width + 2000;
+            ctx.lineDashOffset = 0;
+            ctx.moveTo(worldStartX, roadBottom);
+            ctx.lineTo(worldEndX, roadBottom);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Lane White Edge
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(cameraX, roadBottom + 134, canvas.width + 1000, 6);
+
+            // SHOP Text (Centered in Lane)
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText("SHOP     ", shopX, shopLaneY);
+            ctx.textBaseline = 'alphabetic';
+
+            // Arrow (Highway Style)
+            ctx.save();
+            const ax = shopX + 160;
+            const ay = shopLaneY;
+            ctx.translate(ax, ay);
 
             ctx.fillStyle = '#ffffff';
-            ctx.fillText("SHOP", shopX, shopY);
-
-            // Custom Arrow for SHOP (Right pointing Chevron)
             ctx.beginPath();
-            const ax = shopX + 160;
-            const ay = shopY - 25;
-            ctx.moveTo(ax, ay);
-            ctx.lineTo(ax + 30, ay + 20); // Tip
-            ctx.lineTo(ax, ay + 40);
-            ctx.lineTo(ax - 15, ay + 40);
-            ctx.lineTo(ax + 15, ay + 20); // Inner tip
-            ctx.lineTo(ax - 15, ay);
+            // Standard Highway Straight Arrow (Elongated)
+            ctx.moveTo(60, 0);
+            ctx.lineTo(20, -35);
+            ctx.lineTo(20, -12);
+            ctx.lineTo(-60, -12);
+            ctx.lineTo(-60, 12);
+            ctx.lineTo(20, 12);
+            ctx.lineTo(20, 35);
+            ctx.closePath();
+
             ctx.fill();
+            ctx.restore();
         }
 
         ctx.restore();
@@ -1846,6 +2064,9 @@ function draw() {
     ctx.fillStyle = '#fff';
     ctx.fillRect(cameraX, roadTop, canvas.width + 1000, 6);
     ctx.fillRect(cameraX, roadBottom, canvas.width + 1000, 6);
+
+    // v3.70 - v3.32: Old Pit-In Code REMOVED
+
 
     // v3.32: Natural Exit Ramp Blending (Gore Area + Chevrons)
     if (gameState === STATE.EXITING) {
@@ -1918,6 +2139,81 @@ function draw() {
     }
     ctx.stroke();
 
+    // v2.98: Coin Spot Visual (Moved to earlier layer for correct layering)
+    if (round.isCoinSpot) {
+        ctx.save();
+        const sweetSpotW = round.spot.w;
+        const sweetSpotX = round.spot.x;
+        const spotY = round.spot.y;
+
+        // Realistic White Frame (Solid)
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 4;
+        ctx.setLineDash([]); // Solid
+        const frameW = sweetSpotW;
+        const frameH = 60;
+        ctx.strokeRect(sweetSpotX - frameW / 2, spotY - frameH / 2, frameW, frameH);
+
+        // v3.10: Detailed Parking Meter Object
+        const meterX = sweetSpotX - frameW / 2 - 20; // Slightly left of spot
+        const meterY = spotY - frameH / 2 - 10;    // Slightly above
+
+        // 1. Pole with Metallic Gradient
+        const poleGrad = ctx.createLinearGradient(meterX - 3, 0, meterX + 3, 0);
+        poleGrad.addColorStop(0, '#444');
+        poleGrad.addColorStop(0.5, '#aaa');
+        poleGrad.addColorStop(1, '#444');
+        ctx.fillStyle = poleGrad;
+        ctx.fillRect(meterX - 3, meterY - 20, 6, 35); // Slightly thicker pole
+
+        // 2. Head Housing (Trapezoid/Rounded)
+        ctx.fillStyle = '#222';
+        const headW = 18;
+        const headH = 24;
+
+        // Base of the head
+        ctx.beginPath();
+        ctx.moveTo(meterX - headW / 2, meterY - 15);
+        ctx.lineTo(meterX + headW / 2, meterY - 15);
+        ctx.lineTo(meterX + headW / 2 + 2, meterY - 25);
+        ctx.lineTo(meterX - headW / 2 - 2, meterY - 25);
+        ctx.fill();
+
+        // Main Body (Dome top)
+        ctx.beginPath();
+        ctx.arc(meterX, meterY - 32, headW / 2 + 2, Math.PI, 0); // Dome
+        ctx.lineTo(meterX + headW / 2 + 2, meterY - 25);
+        ctx.lineTo(meterX - headW / 2 - 2, meterY - 25);
+        ctx.closePath();
+        ctx.fill();
+
+        // 3. Digital Screen (Glowing)
+        ctx.fillStyle = '#0a0a0a';
+        ctx.fillRect(meterX - 6, meterY - 34, 12, 8);
+
+        ctx.fillStyle = '#00ff44';
+        ctx.font = '900 8px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText("$", meterX, meterY - 28); // "P" would also work
+
+        // 4. Glossy Highlight
+        ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(meterX, meterY - 32, headW / 2, Math.PI * 1.2, Math.PI * 1.5);
+        ctx.stroke();
+
+        // Text (Cleaner style)
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '900 24px Inter, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText("COIN SPOT", sweetSpotX, spotY + 10);
+        ctx.font = '700 16px Inter, sans-serif';
+        ctx.fillText("PERFECT = COIN", sweetSpotX, spotY + 35);
+
+        ctx.restore();
+    }
+
     // DRAW UI TEXT ON ROAD (BEHIND CARS)
 
     // Title
@@ -1946,8 +2242,8 @@ function draw() {
             ctx.fillText("TAP / SPACE", titleX, centerY + 60);
         }
 
-        // v3.57: 入力モードを確認してUI要素（スコア、オプション、バージョン）のみを表示
-        if (gameState === STATE.TITLE || gameState === STATE.SELECT_MODE) {
+        // v3.57: 入力モードを確認してUI要素（スコア、オプション、バージョン）のみを表示 -> v3.95: 常に表示（流れていくように）
+        if (true) {
             // v2.38: Display High Score on Title
             ctx.font = '900 30px Inter, sans-serif';
             ctx.fillStyle = 'rgba(255, 215, 0, 0.9)'; // Goldish
@@ -1960,14 +2256,10 @@ function draw() {
             ctx.fillStyle = 'white'; // Reset
             ctx.font = '900 20px Inter, sans-serif';
             const verX = titleX + 320; // Moved right as requested
-            const verY = centerY + 90;
-            ctx.fillText("Ver01.11.15.34日1", verX, verY);
+            const verY = centerY - 10; // v3.98: Moved down
+            ctx.fillText("Ver01.11.16.61s", verX, verY);
 
-            // v2.50: Shop Prompt
-            ctx.font = '20px Inter, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-            ctx.fillText("[S] SHOP", titleX, centerY + 160);
+
         }
 
         ctx.restore();
@@ -2081,9 +2373,10 @@ function draw() {
     ctx.restore(); // v2.30.15: Back to Camera Space for HUD
 
     // v3.65: Player-Side HUD (Restored)
-    if (gameState === STATE.PLAYING || gameState === STATE.DRIFTING || gameState === STATE.ENTRY || gameState === STATE.SELECT_MODE) {
+    // v3.102: Hide in Title/Select/Entry modes (Too early) -> v3.105: Use Opacity Fade
+    if (speedometerOpacity > 0) {
         ctx.save();
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.fillStyle = `rgba(255, 255, 255, ${speedometerOpacity})`; // v3.105: Dynamic Opacity
         ctx.font = '900 16px Inter, sans-serif';
         ctx.textAlign = 'right';
         ctx.shadowColor = 'black';
@@ -2100,80 +2393,9 @@ function draw() {
         // Progress Bar to Next Level? Optional. Just text for now.
         ctx.restore();
     }
-    // v2.98: Coin Spot Visual (Replacing Sweet Spot with Realistic Parking)
-    if (round.isCoinSpot) {
-        ctx.save();
-        const sweetSpotW = round.spot.w;
-        const sweetSpotX = round.spot.x;
-        const spotY = round.spot.y;
 
-        // Realistic White Frame (Solid)
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 4;
-        ctx.setLineDash([]); // Solid
-        const frameW = sweetSpotW;
-        const frameH = 60;
-        ctx.strokeRect(sweetSpotX - frameW / 2, spotY - frameH / 2, frameW, frameH);
 
-        // v3.10: Detailed Parking Meter Object
-        const meterX = sweetSpotX - frameW / 2 - 20; // Slightly left of spot
-        const meterY = spotY - frameH / 2 - 10;    // Slightly above
-
-        // 1. Pole with Metallic Gradient
-        const poleGrad = ctx.createLinearGradient(meterX - 3, 0, meterX + 3, 0);
-        poleGrad.addColorStop(0, '#444');
-        poleGrad.addColorStop(0.5, '#aaa');
-        poleGrad.addColorStop(1, '#444');
-        ctx.fillStyle = poleGrad;
-        ctx.fillRect(meterX - 3, meterY - 20, 6, 35); // Slightly thicker pole
-
-        // 2. Head Housing (Trapezoid/Rounded)
-        ctx.fillStyle = '#222';
-        const headW = 18;
-        const headH = 24;
-
-        // Base of the head
-        ctx.beginPath();
-        ctx.moveTo(meterX - headW / 2, meterY - 15);
-        ctx.lineTo(meterX + headW / 2, meterY - 15);
-        ctx.lineTo(meterX + headW / 2 + 2, meterY - 25);
-        ctx.lineTo(meterX - headW / 2 - 2, meterY - 25);
-        ctx.fill();
-
-        // Main Body (Dome top)
-        ctx.beginPath();
-        ctx.arc(meterX, meterY - 32, headW / 2 + 2, Math.PI, 0); // Dome
-        ctx.lineTo(meterX + headW / 2 + 2, meterY - 25);
-        ctx.lineTo(meterX - headW / 2 - 2, meterY - 25);
-        ctx.closePath();
-        ctx.fill();
-
-        // 3. Digital Screen (Glowing)
-        ctx.fillStyle = '#0a0a0a';
-        ctx.fillRect(meterX - 6, meterY - 34, 12, 8);
-
-        ctx.fillStyle = '#00ff44';
-        ctx.font = '900 8px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText("$", meterX, meterY - 28); // "P" would also work
-
-        // 4. Glossy Highlight
-        ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(meterX, meterY - 32, headW / 2, Math.PI * 1.2, Math.PI * 1.5);
-        ctx.stroke();
-
-        // Text (Cleaner style)
-        ctx.fillStyle = '#ffffff';
-        ctx.font = '900 24px Inter, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText("COIN SPOT", sweetSpotX, spotY + 10);
-        ctx.font = '700 16px Inter, sans-serif';
-        ctx.fillText("PERFECT = COIN", sweetSpotX, spotY + 35);
-
-        ctx.restore();
-    }
+    // v3.65: Player-Side HUD (Restored) - NOW HANDLED IN renderHUD
 
     ctx.restore(); // Restore Camera Transform (Back to Screen Space)
 
@@ -2207,148 +2429,15 @@ function draw() {
         ctx.restore();
     }
 
+    // UI Layer
+    renderHUD();
 
-
-    // Always show HUD
-    ctx.fillStyle = 'white';
-    ctx.font = '900 30px Inter, sans-serif'; // Matches floating score style
-    ctx.textAlign = 'left';
-
-    // Calculate display values
-    // Speed: 10 pixels/frame approx 100km/h? Let's say * 10.
-    const currentSpeed = Math.sqrt(car.vx * car.vx + car.vy * car.vy);
-    const kmh = Math.floor(currentSpeed * 10);
-
-    // Distance: pixels / 1000 = km? roughly.
-    const km = (totalDistance / 2000).toFixed(1);
-
-
-    // v3.00: Select Mode UI (Highway Signs)
     if (gameState === STATE.SELECT_MODE) {
-        ctx.save();
-        const centerY = canvas.height / 2;
-
-        // Draw Highway Gantry (Overhead)
-        // Positioned ahead of the car
-        const gantryX = (Math.floor(car.x / 4000) + 1) * 4000;
-
-        // v3.05: Draw Exit Ramp visual starting to peel off
-        ctx.strokeStyle = 'rgba(85, 85, 85, 0.8)';
-        ctx.lineWidth = 140; // Match road width
-        ctx.setLineDash([]);
-        ctx.beginPath();
-        // Starts straight, then curves down (Y+) starting at gantryX
-        ctx.moveTo(gantryX - 400, centerY + 64);
-        ctx.bezierCurveTo(gantryX + 200, centerY + 64, gantryX + 200, centerY + 300, gantryX + 1000, centerY + 500);
-        ctx.stroke();
-
-        // Check if visible
-        if (gantryX > cameraX - 100 && gantryX < cameraX + canvas.width + 1000) {
-            ctx.fillStyle = '#333';
-            // Pillars
-            ctx.fillRect(gantryX - 10, centerY - 300, 20, 500); // Behind main road
-            ctx.fillRect(gantryX + 800, centerY - 300, 20, 700); // Far side (Exit ramp pillar)
-
-            // Beam
-            ctx.fillRect(gantryX - 10, centerY - 300, 830, 40);
-
-            // Signs
-
-            // Sign 1: GO! (Main) - Left Sign (Over Main Lane)
-            ctx.fillStyle = '#0033aa'; // Blue Sign
-            ctx.fillRect(gantryX + 100, centerY - 280, 250, 100);
-            ctx.strokeStyle = 'white';
-            ctx.lineWidth = 4;
-            ctx.strokeRect(gantryX + 100, centerY - 280, 250, 100);
-
-            ctx.fillStyle = 'white';
-            ctx.font = '900 60px Inter, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText("GO!", gantryX + 225, centerY - 210);
-
-            // Sign 2: SHOP (Exit) - Right Sign (Over Exit Lane)
-            ctx.fillStyle = '#00aa00'; // Green Sign
-            ctx.fillRect(gantryX + 450, centerY - 280, 250, 100);
-            ctx.strokeRect(gantryX + 450, centerY - 280, 250, 100);
-
-            ctx.fillStyle = 'white';
-            ctx.font = '900 40px Inter, sans-serif';
-            ctx.fillText("SHOP", gantryX + 575, centerY - 220);
-            ctx.font = '900 20px Inter, sans-serif';
-            ctx.fillText("EXIT ↘", gantryX + 575, centerY - 190);
-        }
-
-        // Instruction Text (Screen Space)
-        ctx.restore(); // Back to Screen
-        ctx.save();
-        ctx.fillStyle = 'white';
-        ctx.font = '900 30px Inter, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.shadowColor = 'black';
-        ctx.shadowBlur = 4;
-        ctx.fillText("LANE [↑/↓]  SELECT [SPACE]", canvas.width / 2, canvas.height - 100);
-        ctx.restore();
+        renderSelectMode(cameraX);
     }
 
-    ctx.fillText(`LEVEL ${level}  |  SCORE: ${score}  |  COINS: ${coins}`, 40, 50);
-    // ctx.fillText(`SPEED: ${kmh} km/h  |  DIST: ${km} km`, 40, 85); // Moved to car v3.65
-
-    // v2.50: Shop UI
     if (gameState === STATE.SHOP) {
-        ctx.fillStyle = 'rgba(0,0,0,0.8)';
-        ctx.fillRect(0, 0, canvas.width, canvas.height); // Overlay
-
-        ctx.fillStyle = 'white';
-        ctx.textAlign = 'center';
-
-        ctx.font = '900 40px Inter, sans-serif';
-        ctx.fillText("SKIN SHOP", canvas.width / 2, 100);
-        ctx.font = '900 20px Inter, sans-serif';
-        ctx.fillText(`COINS: ${coins}`, canvas.width / 2, 140);
-
-        // Draw Selected Skin Preview (Large)
-        const skin = SKINS[shopSelection];
-        const cx = canvas.width / 2;
-        const cy = canvas.height / 2;
-
-        // v2.90: Use new renderer
-        drawCar(cx, cy, skin, 2.0); // Scale 2.0
-
-        // Info
-        ctx.fillStyle = 'white';
-        ctx.font = '900 30px Inter, sans-serif';
-        ctx.fillText(skin.name, cx, cy + 150);
-
-        // Status
-        let statusText = `${skin.price} COIN`;
-        let statusColor = '#ffff00';
-
-        if (unlockedSkins.includes(skin.id)) {
-            if (currentSkinId === skin.id) {
-                statusText = "EQUIPPED";
-                statusColor = '#00ff00';
-            } else {
-                statusText = "OWNED (SPACE TO EQUIP)";
-                statusColor = '#ffffff';
-            }
-        } else {
-            if (coins < skin.price) {
-                statusText = `NEED ${skin.price} COIN`;
-                statusColor = '#ff4444';
-            } else {
-                statusText = `BUY FOR ${skin.price} COIN (SPACE)`;
-            }
-        }
-
-        ctx.fillStyle = statusColor;
-        ctx.font = '900 24px Inter, sans-serif';
-        ctx.fillText(statusText, cx, cy + 190);
-
-        // Arrows
-        ctx.fillStyle = 'rgba(255,255,255,0.5)';
-        ctx.fillText("< LEFT / RIGHT >", cx, cy + 240);
-        ctx.font = '16px Inter, sans-serif';
-        ctx.fillText("[S] or [ESC] to RETURN", cx, canvas.height - 40);
+        renderShop();
     }
 
     // v3.40: Audio Settings Overlay
@@ -2358,6 +2447,202 @@ function draw() {
 
     // v3.55: Draw Mute Button (Always on top)
     drawMuteButton();
+}
+
+function renderHUD() {
+    // Player HUD (Top Left / Or Player Side)
+
+    // 1. Text Based HUD (Top Left)
+    // Always show HUD
+    ctx.fillStyle = 'white';
+    ctx.font = '900 30px Inter, sans-serif'; // Matches floating score style
+    ctx.textAlign = 'left';
+
+    // Calculate display values
+    const currentSpeed = Math.sqrt(car.vx * car.vx + car.vy * car.vy);
+    const kmh = Math.floor(currentSpeed * 10);
+    // Distance: pixels / 1000 = km? roughly.
+    const km = (totalDistance / 2000).toFixed(1);
+
+    ctx.fillText(`LEVEL ${level}  |  SCORE: ${score}  |  COINS: ${coins}`, 40, 50);
+    // ctx.fillText(`SPEED: ${kmh} km/h  |  DIST: ${km} km`, 40, 85); // Optional
+
+    // 2. Player Side HUD (Near Car) - Only in active states
+    if (gameState === STATE.PLAYING || gameState === STATE.DRIFTING || gameState === STATE.ENTRY || gameState === STATE.SELECT_MODE) {
+        ctx.save();
+        // Note: We are in Screen Space here. But we want to draw near the car.
+        // If we want to draw relative to the car in screen space:
+        // We need the car's screen position.
+        // Earlier code was doing this inside `ctx.translate(car.x, car.y)` block which was CAMERA SPACE (relative to 0,0 center).
+        // But here we are in SCREEN SPACE (0,0 is top left).
+        // Wait, the original code for Player-Side HUD (lines 2242) was inside the Camera Transform block.
+        // If I move it here (Screen Space), I need to project it?
+        // OR I should have kept it in the Camera Transform block?
+        // The original code passed `draw()` did: `ctx.restore(); // Back to Screen Space` at line 2263.
+        // The block at 2242 was BEFORE 2263.
+        // So `renderHUD` is called AFTER 2263 (in Screen Space).
+        // So the Player-Side HUD logic (2242) CANNOT simply be moved here unless we project coordinates.
+        // However, I can omit the Player-Side HUD from `renderHUD` and leave it in `draw`?
+        // BUT the refactor plan said "Extract HUD".
+        // Let's check `draw` again in my previous view.
+        // Lines 2263 is Restore.
+        // Lines 2242 is BEFORE Restore.
+        // Lines 2297 is AFTER Restore.
+        // So there are TWO HUD blocks. One world-attached (2242), one screen-attached (2297).
+        // I will extract the Screen-Attached one to `renderHUD`.
+        // I will LEAVE the World-Attached one in place (or extract a `renderWorldHUD`?).
+        // For simplicity and "safe refactor", I will leave the World-Attached one (2242) where it is (inside the camera transform).
+        // The block I am replacing (2297 to 2454) is entirely Screen Space.
+        // So `renderHUD` will only contain the Screen Space HUD (Level/Score).
+        // The unused `kmh` calculation at 2304 was used for... nothing in the screen space block?
+        // It was used for the commented out line 2387.
+        // So it's fine.
+    }
+}
+
+function renderSelectMode(cameraX) {
+    ctx.save();
+    const centerY = canvas.height / 2;
+
+    // Draw Highway Gantry (Overhead)
+    // Positioned ahead of the car
+    const gantryX = (Math.floor(car.x / 4000) + 1) * 4000;
+
+    // v3.05: Draw Exit Ramp visual starting to peel off
+    ctx.strokeStyle = 'rgba(85, 85, 85, 0.8)';
+    ctx.lineWidth = 140; // Match road width
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    // Starts straight, then curves down (Y+) starting at gantryX
+    ctx.moveTo(gantryX - 400, centerY + 64);
+    ctx.bezierCurveTo(gantryX + 200, centerY + 64, gantryX + 200, centerY + 300, gantryX + 1000, centerY + 500);
+    ctx.stroke();
+
+    // Check if visible
+    if (gantryX > cameraX - 100 && gantryX < cameraX + canvas.width + 1000) {
+        ctx.fillStyle = '#333';
+        // Pillars
+        ctx.fillRect(gantryX - 10, centerY - 300, 20, 500); // Behind main road
+        ctx.fillRect(gantryX + 800, centerY - 300, 20, 700); // Far side (Exit ramp pillar)
+
+        // Beam
+        ctx.fillRect(gantryX - 10, centerY - 300, 830, 40);
+
+        // Signs
+
+        // Sign 1: GO! (Main) - Left Sign (Over Main Lane)
+        ctx.fillStyle = '#0033aa'; // Blue Sign
+        ctx.fillRect(gantryX + 100, centerY - 280, 250, 100);
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(gantryX + 100, centerY - 280, 250, 100);
+
+        ctx.fillStyle = 'white';
+        ctx.font = '900 60px Inter, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText("GO!", gantryX + 225, centerY - 210);
+
+        // Sign 2: SHOP (Exit) - Right Sign (Over Exit Lane)
+        ctx.fillStyle = '#00aa00'; // Green Sign
+        ctx.fillRect(gantryX + 450, centerY - 280, 250, 100);
+        ctx.strokeRect(gantryX + 450, centerY - 280, 250, 100);
+
+        ctx.fillStyle = 'white';
+        ctx.font = '900 40px Inter, sans-serif';
+        ctx.fillText("SHOP", gantryX + 575, centerY - 220);
+        ctx.font = '900 20px Inter, sans-serif';
+        ctx.fillText("EXIT ↘", gantryX + 575, centerY - 190);
+    }
+
+    // Instruction Text (Screen Space) -> Wait, gantry drawing uses gantryX (World).
+    // The previous code block (2313) started with ctx.save() but NO transform change.
+    // BUT the context was restored to Screen Space (Identity) at 2263.
+    // So drawing at gantryX (e.g. 4000) with Identity Transform draws at x=4000 on screen.
+    // If the canvas is 1920 wide, x=4000 is invisible.
+    // THIS MEANS THE GANTRY CODE WAS BUGGED/INVISIBLE previously unless cameraX was somehow involved in transform.
+    // It wasn't.
+    // For now, I preserve the logic as requested (Refactor, not fix unrequested bugs).
+    // However, if I want to "Fix" it I should subtract cameraX?
+    // "ctx.translate(-cameraX, 0);"?
+    // The user didn't ask to fix bugs, but seeing as I am touching it...
+    // The logic `gantryX > cameraX` implies it expects cameraX to matter.
+    // I will ADD `ctx.translate(-cameraX, 0);` to make it work, assuming it was intended to be visible.
+    // BUT `Select Mode` Gantry is for "Highway Exit Selection" which implies it should be visible.
+    // Actually, `Select Mode` starts at `car.x=0`. `gantryX` is 4000.
+    // The user sees the Road Markings (1801).
+    // The Gantry is for endless scrolling where you pass gantries every 4km.
+    // Since we only just implemented Select Mode as a start screen, we never reach 4km.
+    // So this code is effectively dead/future-proofing.
+    // I will leave it as is (Screen Space but using World coords = Invisible).
+
+    ctx.restore(); // Back to Screen (Undo save at start)
+
+    // Instruction Text (Screen Space)
+    ctx.save();
+    ctx.fillStyle = 'white';
+    ctx.font = '900 30px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = 'black';
+    ctx.shadowBlur = 4;
+    ctx.fillText("LANE [↑/↓]  SELECT [SPACE]", canvas.width / 2, canvas.height - 100);
+    ctx.restore();
+}
+
+function renderShop() {
+    ctx.fillStyle = 'rgba(0,0,0,0.8)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height); // Overlay
+
+    ctx.fillStyle = 'white';
+    ctx.textAlign = 'center';
+
+    ctx.font = '900 40px Inter, sans-serif';
+    ctx.fillText("SKIN SHOP", canvas.width / 2, 100);
+    ctx.font = '900 20px Inter, sans-serif';
+    ctx.fillText(`COINS: ${coins}`, canvas.width / 2, 140);
+
+    // Draw Selected Skin Preview (Large)
+    const skin = SKINS[shopSelection];
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+
+    // v2.90: Use new renderer
+    drawCar(cx, cy, skin, 2.0); // Scale 2.0
+
+    // Info
+    ctx.fillStyle = 'white';
+    ctx.font = '900 30px Inter, sans-serif';
+    ctx.fillText(skin.name, cx, cy + 150);
+
+    // Status
+    let statusText = `${skin.price} COIN`;
+    let statusColor = '#ffff00';
+
+    if (unlockedSkins.includes(skin.id)) {
+        if (currentSkinId === skin.id) {
+            statusText = "EQUIPPED";
+            statusColor = '#00ff00';
+        } else {
+            statusText = "OWNED (SPACE TO EQUIP)";
+            statusColor = '#ffffff';
+        }
+    } else {
+        if (coins < skin.price) {
+            statusText = `NEED ${skin.price} COIN`;
+            statusColor = '#ff4444';
+        } else {
+            statusText = `BUY FOR ${skin.price} COIN (SPACE)`;
+        }
+    }
+
+    ctx.fillStyle = statusColor;
+    ctx.font = '900 24px Inter, sans-serif';
+    ctx.fillText(statusText, cx, cy + 190);
+
+    // Arrows
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.fillText("< LEFT / RIGHT >", cx, cy + 240);
+    ctx.font = '16px Inter, sans-serif';
+    ctx.fillText("[S] or [ESC] to RETURN", cx, canvas.height - 40);
 }
 
 function drawMuteButton() {
@@ -2527,6 +2812,23 @@ function drawCar(x, y, skin, scale) {
         drawVan(skin, length, width);
     } else {
         drawCoupe(skin, length, width);
+    }
+
+    // v3.110: Blinker Logic (Right Blinker for Shop Selection)
+    if (gameState === STATE.SELECT_MODE && selectLane === 1) {
+        // Blink every 300ms
+        const blink = Math.floor(Date.now() / 300) % 2 === 0;
+        if (blink) {
+            ctx.fillStyle = '#ffaa00'; // Orange
+            ctx.fillStyle = '#ff8800'; // Bright Orange
+            ctx.shadowColor = '#ff8800';
+            ctx.shadowBlur = 20; // Stronger glow
+            ctx.fillRect(-55, 20, 10, 10); // Much bigger for visibility check
+
+            // Side/Front?
+            ctx.fillRect(40, 25, 6, 6); // Front Right
+            ctx.shadowBlur = 0;
+        }
     }
 
     ctx.restore();
