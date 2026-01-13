@@ -5,7 +5,7 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
-const version = "Ver01.13.02.16.20s"; // Fix Instant Shop Exit
+const version = "Ver01.13.23.59.00m"; // Shop Neighbor Click
 
 // v2.90: roundRectのポリフィル（古いブラウザ用）
 if (!ctx.roundRect) {
@@ -117,6 +117,7 @@ let shopVisualOffset = 0; // v3.150: Shop Carousel Animation Offset
 let shopParticles = []; // v3.151: Shop Visual Effects
 let shopSparklePending = false; // v3.152: Trigger effect on settle
 let shopFocus = 0; // v3.158: 0=Carousel, 1=Exit Button
+let shopYOffset = 0; // v3.180: Vertical scroll for focus
 
 let perfectCombo = 0; // v2.41: コンボシステム
 let lastTime = 0;
@@ -371,6 +372,33 @@ class SoundManager {
         noiseGain.connect(this.gainNode);
         noise.start();
     }
+    // v3.175: 決定音（GO!）
+    playDecide() {
+        if (!audioSettings.ui || !this.initialized) return;
+        const osc = this.ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(600, this.ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1000, this.ctx.currentTime + 0.1);
+
+        const gain = this.ctx.createGain();
+        gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 0.1);
+
+        osc.connect(gain);
+        gain.connect(this.gainNode);
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.1);
+    }
+
+    // v3.187: Ensure context is running (Autoplay Policy)
+    ensureAudio() {
+        if (!this.initialized) {
+            this.init();
+        }
+        if (this.ctx && this.ctx.state === 'suspended') {
+            this.ctx.resume();
+        }
+    }
 }
 
 const soundManager = new SoundManager();
@@ -600,6 +628,20 @@ function updateUIFlow() {
         if (Math.abs(shopVisualOffset) < 1) {
             shopVisualOffset = 0;
         }
+
+        // v3.180: Vertical Scroll Logic
+        // Focus 0 (Skin): CenterY is target. Skin is at CenterY. Offset = 0.
+        // Focus 1 (Exit): BtnY is target. BtnY is 180. Center is 300(vh/2). Offset = 300 - 180 = 120.
+        let targetYOffset = 0;
+        if (shopFocus === 1) {
+            // Hardcoded btnY is 180. Center is vh/2.
+            // We want btnY + offset = vh/2
+            // offset = vh/2 - 180
+            targetYOffset = (vh / 2) - 180;
+        } else {
+            targetYOffset = 0;
+        }
+        shopYOffset += (targetYOffset - shopYOffset) * 0.1; // Smooth scroll
     }
 }
 
@@ -634,6 +676,9 @@ resize();
 
 // 入力
 window.addEventListener('keydown', (e) => {
+    // v3.187: Autoplay fix
+    soundManager.ensureAudio();
+
     keys[e.code] = true; // v3.116: Key Tracking
 
     // v3.40: オーディオ設定の切り替え
@@ -705,42 +750,7 @@ window.addEventListener('keydown', (e) => {
                 tryBuySkin(shopSelection);
                 soundManager.playUI();
             } else {
-                // Exit -> Select Mode (Highway)
-                soundManager.playDecide();
-
-                // Manual Car Reset for Select Mode
-                const centerY = canvas.height / 2;
-                car.x = 200; // v3.166: Start positive so Gantry (4000) is far enough away
-                car.y = centerY + 64; // Main lane
-                car.vx = 20; // Cruising speed
-                car.vy = 0;
-                car.angle = 0;
-                car.speed = 20;
-                car.lastHit = null;
-                car.spin = 0;
-
-                scrollFocusX = car.x; // v3.166: Reset camera focus immediately
-
-                // Reset Game State vars
-                score = 0;
-                level = 1;
-                consecutiveWins = 0;
-
-                gameState = STATE.SELECT_MODE;
-                selectLane = 0; // Force GO lane 
-
-                // v3.165: Ensure Title/Select visuals are active
-                isTitleFlowing = true;
-                titleFlowStartX = car.x;
-                showTitleInstruction = true;
-                blinkerActive = false;
-
-                // Optional: Auto-start if user wanted "Immediate" start? 
-                // User said: "Up then Space transitions to gameplay"
-                // But also "First get out of screen".
-                // Going to SELECT_MODE satisfies "Get out". 
-                // User can press Space again to Start (or I can auto-call startRound if I want instant).
-                // Let's stick to SELECT_MODE for safety and clarity.
+                exitShop();
             }
         }
     } else if (e.code === 'KeyS' || e.code === 'Escape') {
@@ -800,7 +810,11 @@ window.addEventListener('touchend', (e) => {
                 handleInput({ swipeUp: true });
             } else {
                 // Tap
-                handleInput({});
+                if (gameState === STATE.SHOP) {
+                    handleShopInput(touchEnd.x, touchEnd.y);
+                } else {
+                    handleInput({});
+                }
             }
         }
     }
@@ -813,7 +827,28 @@ window.addEventListener('mousedown', (e) => {
         const y = (e.clientY - rect.top) / baseScale;
 
         if (checkMuteButton(x, y)) return;
-        handleInput(e);
+
+        if (gameState === STATE.SHOP) {
+            handleShopInput(x, y);
+        } else if (gameState === STATE.TITLE || gameState === STATE.SELECT_MODE) {
+            // v3.190: Click to Select Lane
+            const centerY = vh / 2;
+            const thresholdY = centerY + 130; // Dividing line roughly
+
+            const clickedLane = (y < thresholdY) ? 0 : 1;
+
+            if (clickedLane === selectLane) {
+                // v3.191: Only confirm if already selected (Double Click / Intentional Confirm)
+                handleInput(e);
+            } else {
+                // Switch Selection
+                selectLane = clickedLane;
+                blinkerActive = (selectLane === 1);
+                soundManager.playUI();
+            }
+        } else {
+            handleInput(e);
+        }
     }
 });
 
@@ -831,6 +866,7 @@ function checkMuteButton(x, y) {
 }
 
 function handleInput(e) {
+    if (gameState === STATE.SHOP) return;
     if (!e) e = {};
     soundManager.init();
     soundManager.startEngine();
@@ -1160,6 +1196,9 @@ function resetGame() {
     speedometerOpacity = 0; // v3.105: Smooth fade for speedometer
     launchAnimProgress = 0; // v3.115: Progress for Shop lane boundary fill (0 to 1)
 
+    // v3.172: Ensure Screen Fade is reset
+    screenFade = { alpha: 0, state: 0 };
+
     hideResultScreen();
 
     showTitleInstruction = true;
@@ -1186,6 +1225,47 @@ function resetGame() {
 }
 
 resetGame();
+
+// v3.171: Shop Helpers
+function exitShop() {
+    soundManager.playDecide();
+    resetGame();
+}
+
+function handleShopInput(x, y) {
+    const centerX = vw / 2;
+    const btnY = 180;
+
+    // GO Button Impact Area (Original: 200x50) -> Expanded for leniency
+    // Width: 300px (150 radius), Height: 100px (50 radius)
+    if (Math.abs(x - centerX) < 150 && Math.abs(y - btnY) < 50) {
+        exitShop();
+        return;
+    }
+
+    // v3.192: Click Neighboring Cars to Select
+    // Left Car (CenterX - 250) or Left Arrow Area
+    if (Math.abs(x - (centerX - 250)) < 100 || x < vw * 0.25) {
+        shopSelection = (shopSelection - 1 + SKINS.length) % SKINS.length;
+        shopVisualOffset -= 250;
+        soundManager.playUI();
+        spawnShopSparkles(vw / 2, vh / 2, '#ffffff');
+        return;
+    }
+    // Right Car (CenterX + 250) or Right Arrow Area
+    if (Math.abs(x - (centerX + 250)) < 100 || x > vw * 0.75) {
+        shopSelection = (shopSelection + 1) % SKINS.length;
+        shopVisualOffset += 250;
+        soundManager.playUI();
+        spawnShopSparkles(vw / 2, vh / 2, '#ffffff');
+        return;
+    }
+    // Center Click (Buy) - Bottom half center
+    if (Math.abs(x - centerX) < 200 && y > 250) {
+        tryBuySkin(shopSelection);
+        soundManager.playUI();
+    }
+}
 
 function update(dt, rawDt = dt) {
     // v2.95: ズーム更新
@@ -1393,6 +1473,11 @@ function update(dt, rawDt = dt) {
 
                 isTitleFlowing = false;
                 gameState = STATE.SHOP;
+                shopFocus = 0; // v3.171: Initial Focus
+                // v3.185: Start shop carousel at equipped skin
+                const currentIdx = SKINS.findIndex(s => s.id === currentSkinId);
+                shopSelection = (currentIdx !== -1) ? currentIdx : 0;
+
                 shopTransitionTimer = 0; // Reset
                 soundManager.stopEngine(); // v3.147: Silence engine in Shop
             }
@@ -2497,7 +2582,7 @@ function draw() {
             ctx.font = '900 20px Inter, sans-serif';
             const verX = titleX + 320; // Moved right as requested
             const verY = centerY - 10; // v3.98: Moved down
-            ctx.fillText("Ver01.11.18.52.00s", verX, verY);
+            ctx.fillText("Ver01.13.16.50.00s", verX, verY);
 
 
         }
@@ -2854,50 +2939,90 @@ function renderShop() {
     const centerX = vw / 2;
     const centerY = vh / 2;
 
+    // v3.180: Vertical Scroll Container
+    ctx.save();
+    ctx.translate(0, shopYOffset); // Scroll Content
+
     // v3.158: GO Button (Exit)
     const btnY = 180;
-    if (shopFocus === 1) {
-        // Focused State
-        ctx.fillStyle = '#ff0044'; // Red highlight
-        ctx.shadowColor = '#ff0044';
-        ctx.shadowBlur = 20;
-        ctx.beginPath();
-        // ctx.roundRect polyfill check not needed here if assuming standard arc logic or just rect 
-        // Using simple rect for now or roundRect if supported
-        if (ctx.roundRect) {
-            ctx.beginPath();
-            ctx.roundRect(centerX - 100, btnY - 25, 200, 50, 10);
-            ctx.fill();
-        } else {
-            ctx.fillRect(centerX - 100, btnY - 25, 200, 50);
-        }
-        ctx.shadowBlur = 0;
+    // Button Dimensions (Larger per request)
+    const btnW = 280;
+    const btnH = 60;
 
+    if (shopFocus === 1) {
+        // Focused State - RACE STYLE EFFECT
+        const time = Date.now() * 0.005;
+        const pulse = Math.abs(Math.sin(time));
+        const shakeY = Math.sin(time * 2) * 3; // Bobbing motion
+
+        ctx.save();
+        ctx.translate(centerX, btnY + shakeY);
+
+        // 1. Skew transformation for Speed/Race look
+        ctx.transform(1, 0, -0.2, 1, 0, 0); // Skew X by -0.2
+
+        ctx.fillStyle = '#ff0044'; // Red highlight
+        ctx.shadowColor = '#ff3366';
+        ctx.shadowBlur = 20 + pulse * 15; // Pulsing Glow
+
+        ctx.beginPath();
+        // Wider button for impact
+        if (ctx.roundRect) {
+            ctx.roundRect(-btnW / 2, -btnH / 2, btnW, btnH, 10);
+        } else {
+            ctx.fillRect(-btnW / 2, -btnH / 2, btnW, btnH);
+        }
+        ctx.fill();
+
+        // Racing Stripes
+        ctx.fillStyle = 'rgba(255,255,255,0.2)';
+        ctx.fillRect(-btnW / 2 + 20, -btnH / 2, 20, btnH);
+        ctx.fillRect(-btnW / 2 + 50, -btnH / 2, 10, btnH);
+
+        ctx.shadowBlur = 0;
+        ctx.restore(); // Undo Skew for text
+
+        // Text (No skew for readability, or maybe slight?)
+        // Let's keep text un-skewed but moving with the button
         ctx.fillStyle = 'white';
-        ctx.font = '900 30px Inter, sans-serif';
-        ctx.fillText("GO!", centerX, btnY + 10);
+        ctx.font = '900 36px Inter, sans-serif'; // Bigger font
+        // Animated Chevrons
+        const arrowOffset = (Date.now() % 500) / 500 * 10;
+        const leftArr = `>>>`.substring(0, 1 + Math.floor((Date.now() % 600) / 200));
+        const rightArr = `<<<`.substring(0, 1 + Math.floor((Date.now() % 600) / 200));
+
+        ctx.fillText(`>>> GO BACK <<<`, centerX, btnY + 12 + shakeY);
 
         ctx.font = '14px Inter, sans-serif';
-        ctx.fillText("▲ PRESS SPACE TO START", centerX, btnY - 40);
+        ctx.fillStyle = '#ffcccc';
+        ctx.fillText("▲ PRESS SPACE TO EXIT", centerX, btnY - 50 + shakeY);
 
     } else {
-        // Dimmed State
+        // Dimmed State - NOW ALSO SKEWED & LARGER
+        ctx.save();
+        ctx.translate(centerX, btnY);
+
+        // 1. Skew transformation (Consistent Style)
+        ctx.transform(1, 0, -0.2, 1, 0, 0);
+
         ctx.fillStyle = 'rgba(255,255,255,0.2)';
         if (ctx.roundRect) {
             ctx.beginPath();
-            ctx.roundRect(centerX - 80, btnY - 20, 160, 40, 10);
+            ctx.roundRect(-btnW / 2, -btnH / 2, btnW, btnH, 10);
             ctx.fill();
         } else {
-            ctx.fillRect(centerX - 80, btnY - 20, 160, 40);
+            ctx.fillRect(-btnW / 2, -btnH / 2, btnW, btnH);
         }
 
+        ctx.restore();
+
         ctx.fillStyle = 'rgba(255,255,255,0.5)';
-        ctx.font = '900 24px Inter, sans-serif';
-        ctx.fillText("GO!", centerX, btnY + 8);
+        ctx.font = '900 30px Inter, sans-serif'; // Slightly smaller than focused but bigger than before
+        ctx.fillText("GO BACK", centerX, btnY + 10);
 
         ctx.font = '14px Inter, sans-serif';
         ctx.fillStyle = 'rgba(255,255,255,0.3)';
-        ctx.fillText("PUSH UP KEY", centerX, btnY - 35);
+        ctx.fillText("PUSH UP KEY", centerX, btnY - 45);
     }
     const bottomY = vh - 100; // Position for Equipped Car
 
@@ -3062,6 +3187,22 @@ function renderShop() {
             ctx.moveTo(lx, ly);
             ctx.lineTo(lx, ly + 6 * lockScale);
             ctx.stroke();
+        } else if (skin.id === currentSkinId) {
+            // v3.182: Green Border for EQUIPPED Item (User Correction)
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 4 * scale;
+            ctx.shadowColor = '#00ff00';
+            ctx.shadowBlur = 10;
+            ctx.beginPath();
+            const w = 120 * scale;
+            const h = 80 * scale;
+            if (ctx.roundRect) {
+                ctx.roundRect(itemX - w / 2, centerY - h / 2, w, h, 15 * scale);
+            } else {
+                ctx.rect(itemX - w / 2, centerY - h / 2, w, h);
+            }
+            ctx.stroke();
+            ctx.shadowBlur = 0;
         }
 
         // ctx.shadowBlur = 0; // Removed from here
@@ -3124,7 +3265,8 @@ function renderShop() {
     ctx.font = '16px Inter, sans-serif';
     ctx.fillText("< LEFT / RIGHT >", centerX, centerY + 240);
 
-    ctx.restore();
+    ctx.restore(); // End Item Group
+    ctx.restore(); // v3.180: End Scroll Container
 }
 
 function drawMuteButton() {
