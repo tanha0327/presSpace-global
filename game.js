@@ -5,7 +5,7 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
-const version = "Ver01.11.23.10s"; // v3.140: Fix bad park restart
+const version = "Ver01.13.02.16.20s"; // Fix Instant Shop Exit
 
 // v2.90: roundRectのポリフィル（古いブラウザ用）
 if (!ctx.roundRect) {
@@ -113,6 +113,10 @@ function saveAudioSettings() {
 let selectLane = 0; // 0: メイン, 1: ショップ
 let selectY = 0; // 車線変更の視覚的Y位置
 let shopTransitionTimer = 0; // v3.05: ショップ入店アニメーション
+let shopVisualOffset = 0; // v3.150: Shop Carousel Animation Offset
+let shopParticles = []; // v3.151: Shop Visual Effects
+let shopSparklePending = false; // v3.152: Trigger effect on settle
+let shopFocus = 0; // v3.158: 0=Carousel, 1=Exit Button
 
 let perfectCombo = 0; // v2.41: コンボシステム
 let lastTime = 0;
@@ -140,17 +144,17 @@ let touchEnd = { x: 0, y: 0, time: 0 };
 
 // v2.60: スキンデータ
 const SKINS = [
-    { id: 'default', name: 'PANDA 86', model: 'coupe', color: '#ffffff', body: '#ffffff', detail: '#111111', price: 0 },
-    { id: 'red', name: 'CRIMSON', model: 'coupe', color: '#ff4444', body: '#ff4444', detail: '#ffffff', price: 1 },
-    { id: 'blue', name: 'AZURE', model: 'coupe', color: '#4444ff', body: '#4444ff', detail: '#ffffff', price: 1 },
-    { id: 'gold', name: 'MIDAS', model: 'coupe', color: '#ffd700', body: '#ffd700', detail: '#000000', price: 1 },
-    { id: 'dark', name: 'STEALTH', model: 'coupe', color: '#222', body: '#222', detail: '#444', price: 1 },
-    { id: 'neon', name: 'CYBER', model: 'coupe', color: '#00ffcc', body: '#00ffcc', detail: '#ff00ff', price: 10 },
+    { id: 'default', name: 'PANDA 86', model: 'coupe', color: '#ffffff', body: '#ffffff', detail: '#111111', price: 0, rarity: 0 },
+    { id: 'red', name: 'CRIMSON', model: 'coupe', color: '#ff4444', body: '#ff4444', detail: '#ffffff', price: 1, rarity: 0 },
+    { id: 'blue', name: 'AZURE', model: 'coupe', color: '#4444ff', body: '#4444ff', detail: '#ffffff', price: 1, rarity: 1 },
+    { id: 'gold', name: 'MIDAS', model: 'coupe', color: '#ffd700', body: '#ffd700', detail: '#000000', price: 1, rarity: 3 },
+    { id: 'dark', name: 'STEALTH', model: 'coupe', color: '#222', body: '#222', detail: '#444', price: 1, rarity: 1 },
+    { id: 'neon', name: 'CYBER', model: 'coupe', color: '#00ffcc', body: '#00ffcc', detail: '#ff00ff', price: 10, rarity: 2 },
     // v2.90: 新モデル
-    { id: 'super_red', name: 'DIABLO', model: 'supercar', color: '#ff0000', body: '#ff0000', detail: '#111', price: 50 },
-    { id: 'super_x', name: 'PROTO-X', model: 'supercar', color: '#888', body: '#aaa', detail: '#00ffff', price: 100 },
-    { id: 'van_white', name: 'DELIVERY', model: 'van', color: '#eee', body: '#eee', detail: '#333', price: 20 },
-    { id: 'van_black', name: 'A-TEAM', model: 'van', color: '#111', body: '#111', detail: '#cc0000', price: 25 }
+    { id: 'super_red', name: 'DIABLO', model: 'supercar', color: '#ff0000', body: '#ff0000', detail: '#111', price: 50, rarity: 2 },
+    { id: 'super_x', name: 'PROTO-X', model: 'supercar', color: '#888', body: '#aaa', detail: '#00ffff', price: 100, rarity: 3 },
+    { id: 'van_white', name: 'DELIVERY', model: 'van', color: '#eee', body: '#eee', detail: '#333', price: 20, rarity: 0 },
+    { id: 'van_black', name: 'A-TEAM', model: 'van', color: '#111', body: '#111', detail: '#cc0000', price: 25, rarity: 2 }
 ];
 
 // UIグローバル変数
@@ -437,6 +441,83 @@ function spawnShatterParticles(x, y, color, space = 'screen', impulse = null) {
     }
 }
 
+// v3.151: Shop Sparkles
+function spawnShopSparkles(x, y, color) {
+    for (let i = 0; i < 20; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 5 + 2;
+        shopParticles.push({
+            x: x,
+            y: y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            color: color || '#ffffff',
+            alpha: 1.0,
+            size: Math.random() * 6 + 2,
+            life: 1.0
+        });
+    }
+}
+
+// v3.157: Global Shop Purchase Effect
+function spawnLuxuryPurchaseEffect(x, y) {
+    // Explosion Ring
+    for (let i = 0; i < 150; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 15 + 5; // Fast explosion
+        const colors = ['#ffd700', '#ffffff', '#ff00ff', '#44aaff'];
+        const color = colors[Math.floor(Math.random() * colors.length)];
+
+        shopParticles.push({
+            x: x,
+            y: y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            color: color,
+            alpha: 1.0,
+            size: Math.random() * 8 + 4,
+            life: Math.random() * 1.5 + 0.5,
+            drag: 0.95 // Slow down
+        });
+    }
+
+    // Rising "Fountain"
+    for (let i = 0; i < 50; i++) {
+        const angle = (Math.random() * 0.5 - 0.25) * Math.PI - Math.PI / 2; // Upwards
+        const speed = Math.random() * 20 + 10;
+        shopParticles.push({
+            x: x,
+            y: y,
+            vx: Math.cos(angle) * speed * 0.5,
+            vy: Math.sin(angle) * speed,
+            color: '#ffd700', // Gold
+            alpha: 1.0,
+            size: Math.random() * 5 + 2,
+            life: 2.0,
+            gravity: 0.5 // Falls back down
+        });
+    }
+}
+
+// v3.161: Equip Effect (Green)
+function spawnEquipEffect(x, y) {
+    for (let i = 0; i < 60; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 8 + 3;
+        shopParticles.push({
+            x: x,
+            y: y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            color: '#00ff44', // Bright Green
+            alpha: 1.0,
+            size: Math.random() * 6 + 3,
+            life: 1.2,
+            drag: 0.92
+        });
+    }
+}
+
 // v2.21 タイヤ痕用ヘルパー
 function updateTireMarks() {
     const cos = Math.cos(car.angle);
@@ -500,8 +581,26 @@ let smokeParticles = []; // v2.40: ドリフト煙パーティクル
 let screenShake = { x: 0, y: 0, intensity: 0 }; // v2.40: 画面振動
 
 function updateUIFlow() {
-    // Canvasレンダリングはカメラ移動によってフローを自動的に処理します。
-    // 将来的に必要であれば、この関数で論理状態の更新を処理できます。
+    // Title Idle Demo
+    // if (gameState === STATE.TITLE && !showAudioMenu) {
+    //    titleIdleTimer += 1 / 60;
+    //    // updateTitleDemo not defined?
+    // }
+
+    // Shop Carousel Animation
+    if (gameState === STATE.SHOP) {
+        // Smoothly decay offset to 0
+        shopVisualOffset += (0 - shopVisualOffset) * 0.4; // Faster snap (v3.153)
+        // v3.155: Trigger effect mid-animation (User feedback: Half wait)
+        if (Math.abs(shopVisualOffset) < 100 && shopSparklePending) {
+            spawnShopSparkles(window.innerWidth / 2, window.innerHeight / 2, '#ffffff');
+            shopSparklePending = false;
+        }
+
+        if (Math.abs(shopVisualOffset) < 1) {
+            shopVisualOffset = 0;
+        }
+    }
 }
 
 // リサイズ処理
@@ -572,26 +671,84 @@ window.addEventListener('keydown', (e) => {
         return;
     }
 
-    if (e.code === 'Space' && !e.repeat) {
+    if (gameState !== STATE.SHOP && e.code === 'Space' && !e.repeat) {
         handleInput(e);
     }
-    // v2.50: ショップ入力
+    // Shop Carousel Animation
     if (gameState === STATE.SHOP) {
         if (e.code === 'ArrowRight') {
-            shopSelection = (shopSelection + 1) % SKINS.length;
-            soundManager.playUI();
+            if (shopFocus === 0) {
+                shopSelection = (shopSelection + 1) % SKINS.length;
+                shopVisualOffset += 250;
+                soundManager.playUI();
+                spawnShopSparkles(vw / 2, vh / 2, '#ffffff'); // Immediate
+            }
         } else if (e.code === 'ArrowLeft') {
-            shopSelection = (shopSelection - 1 + SKINS.length) % SKINS.length;
-            soundManager.playUI();
+            if (shopFocus === 0) {
+                shopSelection = (shopSelection - 1 + SKINS.length) % SKINS.length;
+                shopVisualOffset -= 250;
+                soundManager.playUI();
+                spawnShopSparkles(vw / 2, vh / 2, '#ffffff'); // Immediate
+            }
+        } else if (e.code === 'ArrowUp') {
+            if (shopFocus === 0) {
+                shopFocus = 1;
+                soundManager.playUI();
+            }
+        } else if (e.code === 'ArrowDown') {
+            if (shopFocus === 1) {
+                shopFocus = 0;
+                soundManager.playUI();
+            }
         } else if (e.code === 'Space' || e.code === 'Enter') {
-            tryBuySkin(shopSelection); // 元のtryBuySkinに戻しました
-            soundManager.playUI();
-        } else if (e.code === 'KeyS' || e.code === 'Escape') {
-            gameState = STATE.TITLE; // 元のgameState = STATE.TITLEに戻しました
-            saveGameData(); // 元のsaveGameData()に戻しました
-            soundManager.playUI();
+            if (shopFocus === 0) {
+                tryBuySkin(shopSelection);
+                soundManager.playUI();
+            } else {
+                // Exit -> Select Mode (Highway)
+                soundManager.playDecide();
+
+                // Manual Car Reset for Select Mode
+                const centerY = canvas.height / 2;
+                car.x = 200; // v3.166: Start positive so Gantry (4000) is far enough away
+                car.y = centerY + 64; // Main lane
+                car.vx = 20; // Cruising speed
+                car.vy = 0;
+                car.angle = 0;
+                car.speed = 20;
+                car.lastHit = null;
+                car.spin = 0;
+
+                scrollFocusX = car.x; // v3.166: Reset camera focus immediately
+
+                // Reset Game State vars
+                score = 0;
+                level = 1;
+                consecutiveWins = 0;
+
+                gameState = STATE.SELECT_MODE;
+                selectLane = 0; // Force GO lane 
+
+                // v3.165: Ensure Title/Select visuals are active
+                isTitleFlowing = true;
+                titleFlowStartX = car.x;
+                showTitleInstruction = true;
+                blinkerActive = false;
+
+                // Optional: Auto-start if user wanted "Immediate" start? 
+                // User said: "Up then Space transitions to gameplay"
+                // But also "First get out of screen".
+                // Going to SELECT_MODE satisfies "Get out". 
+                // User can press Space again to Start (or I can auto-call startRound if I want instant).
+                // Let's stick to SELECT_MODE for safety and clarity.
+            }
         }
+    } else if (e.code === 'KeyS' || e.code === 'Escape') {
+        gameState = STATE.TITLE; // 元のgameState = STATE.TITLEに戻しました
+        saveGameData(); // 元のsaveGameData()に戻しました
+        soundManager.playUI();
     }
+
 
     // v3.00: 車線選択 (タイトル / 選択モード)
     if (gameState === STATE.TITLE || gameState === STATE.SELECT_MODE) {
@@ -770,7 +927,8 @@ function hideResultScreen() {
 function startRound() {
     const previousState = gameState;
     // v3.45: 選択モード（シームレスであるべき）から来ていない場合のみエントリーアニメーションを使用
-    let useEntryAnim = (previousState !== STATE.TITLE && previousState !== STATE.SELECT_MODE);
+    // v3.160: SHOPからの開始もフレッシュスタート（アニメーションなし）とする
+    let useEntryAnim = (previousState !== STATE.TITLE && previousState !== STATE.SELECT_MODE && previousState !== STATE.SHOP);
 
     gameState = STATE.PLAYING;
     targetZoom = 1.0; // v2.95: 再起動時にズームをリセット
@@ -1918,6 +2076,9 @@ function tryBuySkin(index) {
         currentSkinId = skin.id;
         saveGameData();
         addScreenShake(5);
+        soundManager.playCoin(); // Positive feedback
+        // v3.162: Effect adjusted to overlay "EQUIPPED" text
+        spawnEquipEffect(window.innerWidth / 2, window.innerHeight / 2 + 200);
     } else {
         // Buy
         if (coins >= skin.price) {
@@ -1926,7 +2087,8 @@ function tryBuySkin(index) {
             currentSkinId = skin.id;
             saveGameData();
             addScreenShake(10);
-            spawnShatterParticles(canvas.width / 2, canvas.height / 2, skin.color);
+            // spawnShatterParticles(canvas.width / 2, canvas.height / 2, skin.color);
+            spawnLuxuryPurchaseEffect(window.innerWidth / 2, window.innerHeight / 2); // Center of screen
         } else {
             // Fail
             addScreenShake(2); // Negative feedback
@@ -2678,60 +2840,290 @@ function renderShop() {
     ctx.save();
     ctx.scale(baseScale, baseScale);
 
-    ctx.fillStyle = 'rgba(0,0,0,0.8)';
-    ctx.fillRect(0, 0, vw, vh); // Overlay
+    ctx.fillStyle = 'rgba(0,0,0,0.85)';
+    ctx.fillRect(0, 0, vw, vh); // Dark Overlay
 
+    // Title
     ctx.fillStyle = 'white';
     ctx.textAlign = 'center';
-
     ctx.font = '900 40px Inter, sans-serif';
-    ctx.fillText("SKIN SHOP", vw / 2, 100);
+    ctx.fillText("SKIN SHOP", vw / 2, 80);
     ctx.font = '900 20px Inter, sans-serif';
-    ctx.fillText(`COINS: ${coins}`, vw / 2, 140);
+    ctx.fillText(`COINS: ${coins}`, vw / 2, 120);
 
-    // Draw Selected Skin Preview (Large)
-    const skin = SKINS[shopSelection];
-    const cx = vw / 2;
-    const cy = vh / 2;
+    const centerX = vw / 2;
+    const centerY = vh / 2;
 
-    // v2.90: Use new renderer
-    drawCar(cx, cy, skin, 2.0); // Scale 2.0
-
-    // Info
-    ctx.fillStyle = 'white';
-    ctx.font = '900 30px Inter, sans-serif';
-    ctx.fillText(skin.name, cx, cy + 150);
-
-    // Status
-    let statusText = `${skin.price} COIN`;
-    let statusColor = '#ffff00';
-
-    if (unlockedSkins.includes(skin.id)) {
-        if (currentSkinId === skin.id) {
-            statusText = "EQUIPPED";
-            statusColor = '#00ff00';
+    // v3.158: GO Button (Exit)
+    const btnY = 180;
+    if (shopFocus === 1) {
+        // Focused State
+        ctx.fillStyle = '#ff0044'; // Red highlight
+        ctx.shadowColor = '#ff0044';
+        ctx.shadowBlur = 20;
+        ctx.beginPath();
+        // ctx.roundRect polyfill check not needed here if assuming standard arc logic or just rect 
+        // Using simple rect for now or roundRect if supported
+        if (ctx.roundRect) {
+            ctx.beginPath();
+            ctx.roundRect(centerX - 100, btnY - 25, 200, 50, 10);
+            ctx.fill();
         } else {
-            statusText = "OWNED (SPACE TO EQUIP)";
-            statusColor = '#ffffff';
+            ctx.fillRect(centerX - 100, btnY - 25, 200, 50);
         }
+        ctx.shadowBlur = 0;
+
+        ctx.fillStyle = 'white';
+        ctx.font = '900 30px Inter, sans-serif';
+        ctx.fillText("GO!", centerX, btnY + 10);
+
+        ctx.font = '14px Inter, sans-serif';
+        ctx.fillText("▲ PRESS SPACE TO START", centerX, btnY - 40);
+
     } else {
-        if (coins < skin.price) {
-            statusText = `NEED ${skin.price} COIN`;
-            statusColor = '#ff4444';
+        // Dimmed State
+        ctx.fillStyle = 'rgba(255,255,255,0.2)';
+        if (ctx.roundRect) {
+            ctx.beginPath();
+            ctx.roundRect(centerX - 80, btnY - 20, 160, 40, 10);
+            ctx.fill();
         } else {
-            statusText = `BUY FOR ${skin.price} COIN (SPACE)`;
+            ctx.fillRect(centerX - 80, btnY - 20, 160, 40);
         }
+
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.font = '900 24px Inter, sans-serif';
+        ctx.fillText("GO!", centerX, btnY + 8);
+
+        ctx.font = '14px Inter, sans-serif';
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.fillText("PUSH UP KEY", centerX, btnY - 35);
+    }
+    const bottomY = vh - 100; // Position for Equipped Car
+
+    // 1. Draw Equipped Car at Bottom
+    const currentSkin = SKINS.find(s => s.id === currentSkinId) || SKINS[0];
+
+    // Draw the "Stick" connecting Bottom to Center
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(centerX, bottomY - 50); // From top of equipped car
+    ctx.lineTo(centerX, centerY + 100); // To bottom of selected item
+    ctx.stroke();
+
+    // Draw Equipped Car
+    drawCar(centerX, bottomY, currentSkin, 1.2);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.font = '900 16px Inter, sans-serif';
+    ctx.fillText("EQUIPPED", centerX, bottomY + 70);
+
+    // 2. Render Sparkles (Behind items)
+    for (let i = shopParticles.length - 1; i >= 0; i--) {
+        const p = shopParticles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+
+        // Physics (v3.157)
+        if (p.drag) {
+            p.vx *= p.drag;
+            p.vy *= p.drag;
+        }
+        if (p.gravity) {
+            p.vy += p.gravity;
+        } else {
+            p.vy += 0.5; // Default gravity for sparks
+        }
+
+        p.life -= 0.02; // Slower fade for luxury
+
+        if (p.life <= 0) {
+            shopParticles.splice(i, 1);
+            continue;
+        }
+
+        ctx.save();
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = Math.min(1.0, p.alpha * p.life); // Cap at 1
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
     }
 
-    ctx.fillStyle = statusColor;
-    ctx.font = '900 24px Inter, sans-serif';
-    ctx.fillText(statusText, cx, cy + 190);
+    // 3. Draw Carousel with Smooth Animation
+    const spacing = 250;
 
-    // Arrows
+    // Rarity Colors
+    const RARITY_COLORS = ['#ffffff', '#4488ff', '#d02090', '#ffd700'];
+    const RARITY_NAMES = ['COMMON', 'RARE', 'EPIC', 'LEGENDARY'];
+
+    // Draw items
+    for (let i = -2; i <= 2; i++) {
+        // Calculate correctly wrapped index
+        // Use modulus on (shopSelection + i)
+        // If (shopSelection + i) is negative, javascript % returns negative.
+        let rawIndex = (shopSelection + i) % SKINS.length;
+        if (rawIndex < 0) rawIndex += SKINS.length;
+
+        const skin = SKINS[rawIndex];
+
+        // Safety check to prevent "Empty Item" or "Panda 86" default issue
+        // If skin is undefined (shouldn't happen with correct logic), skip
+        if (!skin) continue;
+
+        const itemX = centerX + i * spacing + shopVisualOffset;
+
+        // Calculate distance from center for scaling/opacity
+        const dist = Math.abs(itemX - centerX);
+
+        // Skip if too far off screen
+        if (itemX < -200 || itemX > vw + 200) continue;
+
+        let scaleFactor = Math.max(0, 1 - dist / (spacing * 1.5)); // 0 to 1
+        const scale = 1.0 + 0.8 * scaleFactor;
+        const alpha = Math.max(0.2, 1 - dist / (spacing * 1.2));
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+
+        // Rarity Glow (Only if near center)
+        if (scale > 1.4) {
+            const rarityColor = RARITY_COLORS[skin.rarity || 0];
+            ctx.shadowColor = rarityColor;
+            ctx.shadowBlur = 30; // Strong glow
+
+            // Draw a subtle halo
+            ctx.fillStyle = rarityColor;
+            ctx.globalAlpha = 0.2;
+            ctx.beginPath();
+            ctx.arc(itemX, centerY, 80, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = alpha; // Restore alpha
+
+            ctx.shadowBlur = 0; // Reset shadow BEFORE drawing car (v3.156 fix layer issue)
+        }
+
+        // Draw Car
+        drawCar(itemX, centerY, skin, scale);
+
+        // v3.164: Locked Visuals
+        if (!unlockedSkins.includes(skin.id)) {
+            // Red Border (Match Car Shape)
+            ctx.strokeStyle = '#ff0000';
+            ctx.lineWidth = 4 * scale;
+            ctx.beginPath();
+            // Car dimensions approx 100x60 unscaled. 
+            // We want slightly larger: 120x80?
+            const w = 120 * scale;
+            const h = 80 * scale;
+            if (ctx.roundRect) {
+                ctx.roundRect(itemX - w / 2, centerY - h / 2, w, h, 15 * scale);
+            } else {
+                ctx.rect(itemX - w / 2, centerY - h / 2, w, h);
+            }
+            ctx.stroke();
+
+            // Custom Lock Icon Silhouette
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; // Dim Background for lock
+            ctx.beginPath();
+            ctx.arc(itemX, centerY, 30 * scale, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Draw Lock Shape
+            ctx.fillStyle = '#ffffff';
+            const lockScale = scale * 0.8;
+            const lx = itemX; // Center X
+            const ly = centerY + 5 * lockScale; // Center Y of body
+
+            // Lock Body
+            ctx.beginPath();
+            if (ctx.roundRect) {
+                ctx.roundRect(lx - 12 * lockScale, ly - 10 * lockScale, 24 * lockScale, 20 * lockScale, 4 * lockScale);
+            } else {
+                ctx.fillRect(lx - 12 * lockScale, ly - 10 * lockScale, 24 * lockScale, 20 * lockScale);
+            }
+            ctx.fill();
+
+            // Lock Shackle
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 4 * lockScale;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.arc(lx, ly - 10 * lockScale, 8 * lockScale, Math.PI, 0); // Semicircle up
+            ctx.stroke();
+
+            // Keyhole
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            ctx.arc(lx, ly, 3 * lockScale, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(lx, ly);
+            ctx.lineTo(lx, ly + 6 * lockScale);
+            ctx.stroke();
+        }
+
+        // ctx.shadowBlur = 0; // Removed from here
+
+        // ctx.shadowBlur = 0; // Moved up
+
+        // Draw Name
+        if (scale > 1.4) {
+            const rarityColor = RARITY_COLORS[skin.rarity || 0];
+            ctx.fillStyle = rarityColor;
+            ctx.font = '900 30px Inter, sans-serif';
+            ctx.fillText(skin.name, itemX, centerY + 130);
+
+            // Rarity Label
+            ctx.font = '900 14px Inter, sans-serif';
+            ctx.fillStyle = 'rgba(255,255,255,0.8)';
+            ctx.fillText(RARITY_NAMES[skin.rarity || 0], itemX, centerY + 155);
+
+        } else {
+            ctx.fillStyle = 'rgba(255,255,255,0.7)';
+            ctx.font = '700 20px Inter, sans-serif';
+            ctx.fillText(skin.name, itemX, centerY + 100);
+        }
+
+        ctx.restore();
+    }
+
+    // Selected Item Logic
+    const selectedSkin = SKINS[shopSelection];
+    if (selectedSkin) {
+        // Status / Price / Action
+        let statusText = `${selectedSkin.price} COIN`;
+        let statusColor = '#ffff00';
+
+        if (unlockedSkins.includes(selectedSkin.id)) {
+            if (currentSkinId === selectedSkin.id) {
+                statusText = "EQUIPPED";
+                statusColor = '#00ff00';
+            } else {
+                statusText = "OWNED (SPACE TO EQUIP)";
+                statusColor = '#ffffff';
+            }
+        } else {
+            if (coins < selectedSkin.price) {
+                statusText = `NEED ${selectedSkin.price} COIN`;
+                statusColor = '#ff4444';
+            } else {
+                statusText = `BUY FOR ${selectedSkin.price} COIN (SPACE)`;
+            }
+        }
+
+        ctx.fillStyle = statusColor;
+        ctx.font = '900 24px Inter, sans-serif';
+        // Bumped Y down slightly to accommodate Rarity Label
+        ctx.fillText(statusText, centerX, centerY + 200);
+    }
+
+    // Navigation Hints
     ctx.fillStyle = 'rgba(255,255,255,0.5)';
-    ctx.fillText("< LEFT / RIGHT >", cx, cy + 240);
     ctx.font = '16px Inter, sans-serif';
-    ctx.fillText("[S] or [ESC] to RETURN", cx, vh - 40);
+    ctx.fillText("< LEFT / RIGHT >", centerX, centerY + 240);
+
     ctx.restore();
 }
 
